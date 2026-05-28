@@ -165,7 +165,7 @@ Install both with one command:
 python slack-app/install_cron.py
 ```
 
-The script is idempotent — re-running detects existing jobs by name and skips them. Both jobs target `#gies-disruption-lab` (channel ID `C0B6FAWLRA7`) via the channel routing in `~/.projectclaw/workspace/cron/jobs.json`. Edit `slack-app/install_cron.py` if you want a different channel or schedule.
+The script is idempotent — re-running detects existing jobs by name and skips them. Both jobs target Slack channel ID `C0B6FAWLRA7` (the projectclaw channel) via the channel routing in `~/.projectclaw/workspace/cron/jobs.json`. Edit `slack-app/install_cron.py` if you want a different channel or schedule.
 
 The cron only fires while `projectclaw gateway` is running — if the host is asleep at 9am, that standup is silently missed (no catch-up).
 

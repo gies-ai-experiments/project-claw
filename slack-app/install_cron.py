@@ -43,7 +43,9 @@ WEEKLY_SUMMARY_MESSAGE = (
     "Cite every item with its number and URL. Be punchy."
 )
 
-# Target Slack channel: #gies-disruption-lab (id is stable, name can be renamed)
+# Target Slack channel ID (intentionally only the ID — channel names are
+# mutable in Slack, IDs are not). Override TARGET_CHAT_ID below to use a
+# different channel.
 TARGET_CHANNEL = "slack"
 TARGET_CHAT_ID = "C0B6FAWLRA7"
 
