@@ -655,3 +655,71 @@ def test_slack_channel_uses_channel_aware_allow_policy() -> None:
     channel = SlackChannel(SlackConfig(enabled=True, allow_from=[]), MessageBus())
     assert channel.is_allowed("U1") is True
     assert channel._is_allowed("U1", "C123", "channel") is True
+
+
+# --- projectclaw: per-channel project resolution into metadata ---
+
+
+def _project_map_cfg(**overrides):
+    base = {
+        "enabled": True,
+        "project_map": {
+            "C0123ABCDE": {
+                "name": "foo",
+                "github": {"repos": ["acme/foo-api"]},
+            }
+        },
+    }
+    base.update(overrides)
+    return SlackConfig.model_validate(base)
+
+
+async def _drive_app_mention(channel: SlackChannel, channel_id: str) -> dict:
+    """Run one app_mention through _on_socket_request and return _handle_message kwargs."""
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._with_thread_context = AsyncMock(return_value="hello")  # type: ignore[method-assign]
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+    req = SimpleNamespace(
+        type="events_api",
+        envelope_id=f"env-project-{channel_id}",
+        payload={
+            "event": {
+                "type": "app_mention",
+                "user": "U1",
+                "channel": channel_id,
+                "text": "<@UBOT> status?",
+                "ts": "1700000000.000100",
+            }
+        },
+    )
+    await channel._on_socket_request(client, req)
+    channel._handle_message.assert_awaited_once()
+    return channel._handle_message.await_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_inbound_from_mapped_channel_attaches_project() -> None:
+    channel = SlackChannel(_project_map_cfg(), MessageBus())
+    kwargs = await _drive_app_mention(channel, "C0123ABCDE")
+    project = kwargs["metadata"].get("project")
+    assert project is not None
+    assert project["name"] == "foo"
+    assert project["github"]["repos"] == ["acme/foo-api"]
+
+
+@pytest.mark.asyncio
+async def test_inbound_from_unmapped_channel_no_default_has_null_project() -> None:
+    channel = SlackChannel(_project_map_cfg(), MessageBus())
+    kwargs = await _drive_app_mention(channel, "C9999ZZZZZ")
+    assert kwargs["metadata"].get("project") is None
+
+
+@pytest.mark.asyncio
+async def test_inbound_from_unmapped_channel_with_default_uses_default() -> None:
+    channel = SlackChannel(_project_map_cfg(default_project="foo"), MessageBus())
+    kwargs = await _drive_app_mention(channel, "C9999ZZZZZ")
+    project = kwargs["metadata"].get("project")
+    assert project is not None
+    assert project["name"] == "foo"

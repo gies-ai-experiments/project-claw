@@ -212,6 +212,16 @@ class SlackChannel(BaseChannel):
             self.logger.exception("Error sending message")
             raise
 
+    def _resolve_inbound_project(self, chat_id: str) -> dict[str, Any] | None:
+        project = self.config.project_map.get(chat_id)
+        if project is None and self.config.default_project is not None:
+            project = next(
+                (p for p in self.config.project_map.values()
+                 if p.name == self.config.default_project),
+                None,
+            )
+        return project.model_dump() if project is not None else None
+
     async def _resolve_target_chat_id(self, target: str) -> str:
         """Resolve human-friendly Slack targets to concrete IDs when needed."""
         if not self._web_client:
@@ -461,6 +471,7 @@ class SlackChannel(BaseChannel):
                         "thread_ts": thread_ts,
                         "channel_type": channel_type,
                     },
+                    "project": self._resolve_inbound_project(chat_id),
                 },
                 session_key=session_key,
             )
@@ -541,7 +552,10 @@ class SlackChannel(BaseChannel):
                 sender_id=sender_id,
                 chat_id=chat_id,
                 content=value,
-                metadata={"slack": {"thread_ts": thread_ts, "channel_type": channel_type}},
+                metadata={
+                    "slack": {"thread_ts": thread_ts, "channel_type": channel_type},
+                    "project": self._resolve_inbound_project(chat_id),
+                },
                 session_key=session_key,
             )
         except Exception:
