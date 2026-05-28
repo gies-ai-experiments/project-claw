@@ -55,3 +55,60 @@ def test_github_project_requires_at_least_one_repo():
 def test_granola_project_requires_nonempty_tag():
     with pytest.raises(ValidationError):
         GranolaProjectConfig.model_validate({"tag": ""})
+
+
+# --- SlackConfig.project_map / default_project ---
+
+from nanobot.channels.slack import SlackConfig  # noqa: E402
+
+
+def _project(name: str = "foo") -> dict:
+    return {"name": name, "github": {"repos": [f"acme/{name}"]}}
+
+
+def test_slack_config_accepts_project_map_keyed_by_channel_id():
+    cfg = SlackConfig.model_validate(
+        {
+            "project_map": {
+                "C0123ABCDE": _project("foo"),
+                "C0456FGHIJ": _project("bar"),
+            }
+        }
+    )
+    assert "C0123ABCDE" in cfg.project_map
+    assert cfg.project_map["C0123ABCDE"].name == "foo"
+
+
+def test_slack_config_rejects_channel_name_as_key():
+    with pytest.raises(ValidationError) as exc:
+        SlackConfig.model_validate(
+            {"project_map": {"#project-foo": _project("foo")}}
+        )
+    assert "channel id" in str(exc.value).lower()
+
+
+def test_slack_config_default_project_must_exist_in_map():
+    with pytest.raises(ValidationError) as exc:
+        SlackConfig.model_validate(
+            {
+                "project_map": {"C0123ABCDE": _project("foo")},
+                "default_project": "bar",
+            }
+        )
+    assert "default_project" in str(exc.value).lower()
+
+
+def test_slack_config_default_project_resolves_when_valid():
+    cfg = SlackConfig.model_validate(
+        {
+            "project_map": {"C0123ABCDE": _project("foo")},
+            "default_project": "foo",
+        }
+    )
+    assert cfg.default_project == "foo"
+
+
+def test_slack_config_without_project_map_works():
+    cfg = SlackConfig.model_validate({})
+    assert cfg.project_map == {}
+    assert cfg.default_project is None

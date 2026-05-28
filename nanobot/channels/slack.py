@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import Field
+from pydantic import Field, model_validator
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.socket_mode.websockets import SocketModeClient
@@ -17,7 +17,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.paths import get_media_dir
-from nanobot.config.schema import Base
+from nanobot.config.schema import Base, Project
 from nanobot.pairing import is_approved
 from nanobot.utils.helpers import safe_filename, split_message
 
@@ -48,6 +48,24 @@ class SlackConfig(Base):
     group_policy: str = "mention"
     group_allow_from: list[str] = Field(default_factory=list)
     dm: SlackDMConfig = Field(default_factory=SlackDMConfig)
+    project_map: dict[str, Project] = Field(default_factory=dict)
+    default_project: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_project_map(self) -> "SlackConfig":
+        for key in self.project_map:
+            if not key or key[0] not in "CDGUW" or not key[1:].replace("_", "").isalnum():
+                raise ValueError(
+                    f"project_map key '{key}' is not a Slack channel ID "
+                    "(must start with C/D/G/U/W). Channel names are not allowed."
+                )
+        if self.default_project is not None:
+            names = {p.name for p in self.project_map.values()}
+            if self.default_project not in names:
+                raise ValueError(
+                    f"default_project '{self.default_project}' is not present in project_map"
+                )
+        return self
 
 
 SLACK_MAX_MESSAGE_LEN = 39_000  # Slack API allows ~40k; leave margin
