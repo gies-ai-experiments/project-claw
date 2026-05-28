@@ -104,3 +104,6 @@ exp/
 /learnings.md
 /short_term_memory.md
 /long_term_memory.md
+
+# Agent harness state (never tracked)
+.claude/
