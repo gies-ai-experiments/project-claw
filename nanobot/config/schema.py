@@ -24,6 +24,46 @@ class Base(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+class GitHubProjectConfig(Base):
+    """GitHub portion of a projectclaw Project."""
+
+    repos: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_at_least_one_repo(self) -> "GitHubProjectConfig":
+        if not self.repos:
+            raise ValueError("github.repos must contain at least one 'owner/name' entry")
+        return self
+
+
+class GranolaProjectConfig(Base):
+    """Granola portion of a projectclaw Project."""
+
+    tag: str
+
+    @model_validator(mode="after")
+    def _require_nonempty_tag(self) -> "GranolaProjectConfig":
+        if not self.tag.strip():
+            raise ValueError("granola.tag must be a non-empty string")
+        return self
+
+
+class Project(Base):
+    """A projectclaw project: a name plus at least one data source."""
+
+    name: str
+    github: GitHubProjectConfig | None = None
+    granola: GranolaProjectConfig | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_source(self) -> "Project":
+        if self.github is None and self.granola is None:
+            raise ValueError(
+                f"project '{self.name}' must define at least one of github/granola"
+            )
+        return self
+
+
 class ChannelsConfig(Base):
     """Configuration for chat channels.
 
