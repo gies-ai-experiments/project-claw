@@ -152,7 +152,24 @@ Write to `~/.projectclaw/config.json` (chmod 600):
 
 A project must declare at least one of `github` or `granola`. To find a Granola `folderId`, hit `GET /v1/folders` with your token (or run the bot and ask it: `@projectclaw list our granola folders`).
 
-### 5. Run it
+### 5. Schedule the standup (optional)
+
+The bot can post two recurring updates to your project channel:
+
+- **Daily standup** — Tue–Fri 9am — open PRs awaiting review + PRs merged in the last 24h.
+- **Weekly summary** — Mon 9am — all PRs merged in the last 7 days, open PRs aging (oldest first), issues opened/closed in the last 7 days.
+
+Install both with one command:
+
+```bash
+python slack-app/install_cron.py
+```
+
+The script is idempotent — re-running detects existing jobs by name and skips them. Both jobs target `#gies-disruption-lab` (channel ID `C0B6FAWLRA7`) via the channel routing in `~/.projectclaw/workspace/cron/jobs.json`. Edit `slack-app/install_cron.py` if you want a different channel or schedule.
+
+The cron only fires while `projectclaw gateway` is running — if the host is asleep at 9am, that standup is silently missed (no catch-up).
+
+### 6. Run it
 
 ```bash
 projectclaw gateway
@@ -162,7 +179,11 @@ Watch for `Slack Socket Mode WebSocket connected (events enabled)` in the log. T
 
 > @projectclaw summarize the latest meeting
 
-…and the agent should reply with a cited summary from the right Granola folder.
+…and the agent should reply with a cited summary from the right Granola folder. Or for a GitHub-side test:
+
+> @projectclaw what's open right now?
+
+…which exercises the always-on `github` skill (`gh` CLI required on the host, authenticated via `gh auth login`).
 
 ---
 
