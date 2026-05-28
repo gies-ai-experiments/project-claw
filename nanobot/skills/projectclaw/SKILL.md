@@ -1,7 +1,7 @@
 ---
 name: projectclaw
 description: "Answer team questions on Slack about projects, scoped by the channel-to-project mapping. Use the channel's project to pick which GitHub repos and Granola tag to query; refuse to guess when the project mapping is missing."
-metadata: {"nanobot":{"emoji":"🦞"}}
+metadata: {"nanobot":{"emoji":"🦞","always":true}}
 ---
 
 # projectclaw — multi-project Slack assistant

@@ -28,6 +28,40 @@ def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return cli_app_utils.session_extra(metadata) | mcp_tools.session_extra(metadata)
 
 
+def project_runtime_lines(message: Any) -> list[str]:
+    """Surface inbound metadata.project to the LLM as runtime context lines.
+
+    Channels (e.g. SlackChannel) attach a resolved Project to
+    ``InboundMessage.metadata['project']`` when the channel is mapped to one.
+    Without this helper, that field lives only as Python data — invisible to
+    the model, which makes the projectclaw skill's scoping rules unenforceable
+    because they refer to a field the LLM cannot read.
+    """
+    metadata = getattr(message, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return []
+    project = metadata.get("project")
+    if not isinstance(project, Mapping):
+        return []
+    name = project.get("name")
+    if not name:
+        return []
+    lines = [f"project.name: {name}"]
+    github = project.get("github")
+    if isinstance(github, Mapping):
+        repos = github.get("repos")
+        if isinstance(repos, list) and repos:
+            lines.append(
+                "project.github.repos: " + ", ".join(str(r) for r in repos)
+            )
+    granola = project.get("granola")
+    if isinstance(granola, Mapping):
+        folder_id = granola.get("folder_id")
+        if folder_id:
+            lines.append(f"project.granola.folder_id: {folder_id}")
+    return lines
+
+
 def runtime_lines(state: Any, msg: Any, workspace: Path, *, skip: bool = False) -> list[str]:
     """Return model-visible runtime annotations for turn-attached capabilities."""
     return [
@@ -38,6 +72,7 @@ def runtime_lines(state: Any, msg: Any, workspace: Path, *, skip: bool = False) 
             connected_server_names=set(state._mcp_stacks),
             skip=skip,
         ),
+        *project_runtime_lines(msg),
     ]
 
 
