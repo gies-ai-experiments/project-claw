@@ -30,3 +30,4 @@ The skill format and metadata structure follow OpenClaw's conventions to maintai
 | `clawhub` | Search and install skills from ClawHub registry |
 | `skill-creator` | Create new skills |
 | `long-goal` | Sustained objectives: `long_task`, `complete_goal`, idempotent goals, modular project work, early research |
+| `projectclaw` | Slack-resident multi-project assistant; scopes GitHub/Granola tool calls by channel-to-project mapping |
