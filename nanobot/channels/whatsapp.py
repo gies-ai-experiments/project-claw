@@ -320,7 +320,7 @@ def _ensure_bridge_setup() -> Path:
     from nanobot.config.paths import get_bridge_install_dir
 
     user_bridge = get_bridge_install_dir()
-    stamp_file = user_bridge / ".nanobot-bridge-source-hash"
+    stamp_file = user_bridge / ".projectclaw-bridge-source-hash"
 
     # Find source bridge
     current_file = Path(__file__)

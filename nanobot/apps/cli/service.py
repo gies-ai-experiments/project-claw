@@ -54,7 +54,7 @@ _ARTIFACT_IGNORE_DIRS = frozenset({
     ".git",
     ".hg",
     ".mypy_cache",
-    ".nanobot",
+    ".projectclaw",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",

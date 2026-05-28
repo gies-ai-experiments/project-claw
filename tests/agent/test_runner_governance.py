@@ -541,7 +541,7 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
     messages = [
         {"role": "system", "content": "system"},
         {"role": "assistant", "content": "previous reply"},
-        {"role": "user", "content": ".nanobot的同目录"},
+        {"role": "user", "content": ".projectclaw的同目录"},
         {
             "role": "assistant",
             "content": None,
@@ -572,7 +572,7 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
     token_sizes = {
         "system": 0,
         "previous reply": 200,
-        ".nanobot的同目录": 80,
+        ".projectclaw的同目录": 80,
         "tool output 1": 80,
         "tool output 2": 80,
     }

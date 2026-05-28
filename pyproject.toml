@@ -107,7 +107,8 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+projectclaw = "nanobot.cli.commands:app"
+nanobot = "nanobot.cli.commands:app"  # legacy alias; remove after migration period
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().

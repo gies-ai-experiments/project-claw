@@ -422,7 +422,7 @@ def test_get_history_does_not_paste_assistant_media_paths_into_replay():
         {
             "role": "assistant",
             "content": "来了 🎨",
-            "media": ["/home/user/.nanobot/media/generated/img_abc.png"],
+            "media": ["/home/user/.projectclaw/media/generated/img_abc.png"],
         }
     )
 
@@ -439,7 +439,7 @@ def test_get_history_sanitizes_existing_assistant_replay_artifacts():
             "content": (
                 "[Message Time: 2026-05-09 00:33:48]\n"
                 "来了 🎨\n"
-                "[image: /home/user/.nanobot/media/generated/img_old.png]\n\n"
+                "[image: /home/user/.projectclaw/media/generated/img_old.png]\n\n"
                 "generate_image(\"16:9\")\n"
                 "message(\"来了 🎨\")"
             ),

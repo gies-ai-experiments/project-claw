@@ -1,6 +1,6 @@
 # projectclaw
 
-A multi-project Slack assistant built on the [nanobot](README.md) agent framework. Answers a team's questions about its projects — status, decisions, action items, code — using **GitHub** and **Granola** (meeting notes) as live sources of truth, scoped per Slack channel.
+A multi-project Slack assistant. Answers a team's questions about its projects — status, decisions, action items, code — using **GitHub** and **Granola** (meeting notes) as live sources of truth, scoped per Slack channel.
 
 The premise is simple: each Slack channel maps to one project. When someone asks the bot a question in `#project-foo`, the agent restricts every tool call to that project's GitHub repos and Granola folder. No cross-project leakage; no guessing.
 
@@ -33,7 +33,7 @@ flowchart TB
     user["@projectclaw mention"]
   end
 
-  subgraph nb["projectclaw process (nanobot)"]
+  subgraph nb["projectclaw process"]
     direction TB
     sch["SlackChannel"]
     bus["MessageBus"]
@@ -64,14 +64,14 @@ flowchart TB
   runner -- "OutboundMessage" --> sch --> chan
 ```
 
-**Four load-bearing pieces, all at the edges of the nanobot framework:**
+**Four load-bearing pieces, all at the edges of the runtime:**
 
 1. **`SlackChannel.project_map`** in `nanobot/channels/slack.py` — maps Slack channel ID → `Project` (name, GitHub repos, Granola folder).
 2. **`project_runtime_lines`** in `nanobot/agent/context.py` — surfaces the resolved project to the LLM as a `[Runtime Context]` block. Without this, the skill's rules would reference a field the model can't see.
 3. **The `projectclaw` skill** at `nanobot/skills/projectclaw/SKILL.md` — text-only policy (always-on) that tells the agent how to read the project scope, which tool family to use per question type, and the *Forbidden* rule: never call a tool with a repo or folder_id outside scope.
 4. **The Granola tool** at `nanobot/agent/tools/granola.py` — three read-only tools (`granola_list_notes`, `granola_get_note`, `granola_list_folders`) wrapping `https://public-api.granola.ai/v1` with structured-error semantics (HTTP failures surface inline, never raise).
 
-GitHub access uses the existing `nanobot/skills/github/SKILL.md` + `gh` CLI tool family.
+GitHub access goes through the built-in `github` skill (`gh` CLI under the hood).
 
 ---
 
@@ -92,19 +92,19 @@ Either way, the canonical path is:
 4. *Basic Information* → **App-Level Tokens** → generate one with `connections:write` scope → copy `xapp-…`
 5. Invite `@projectclaw` (or whatever you named the bot) to each project channel: `/invite @projectclaw`
 
-The manifest enables Socket Mode and requests only the scopes nanobot's `SlackChannel` actually uses — no over-permissioning.
+The manifest enables Socket Mode and requests only the scopes the `SlackChannel` actually uses — no over-permissioning.
 
 ### 2. Granola API key
 
 Granola desktop → **Settings → Connectors → API keys → Create new key** (Business+ plan; Enterprise admins control which scopes are available). Copy the `grn_…` token. You only see it once.
 
-### 3. OpenAI key (or any other nanobot-supported provider)
+### 3. OpenAI key (or any other supported provider)
 
 Standard `sk-…` token from [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
 
 ### 4. Config
 
-Write to `~/.nanobot/config.json` (chmod 600):
+Write to `~/.projectclaw/config.json` (chmod 600):
 
 ```jsonc
 {
@@ -155,7 +155,7 @@ A project must declare at least one of `github` or `granola`. To find a Granola 
 ### 5. Run it
 
 ```bash
-nanobot gateway
+projectclaw gateway
 ```
 
 Watch for `Slack Socket Mode WebSocket connected (events enabled)` in the log. Then in a mapped channel:
@@ -185,7 +185,7 @@ Watch for `Slack Socket Mode WebSocket connected (events enabled)` in the log. T
 | `baseUrl` | `https://public-api.granola.ai/v1` | Override only if Granola changes their endpoint |
 | `timeout` | `30` (seconds) | Per-request httpx timeout |
 
-### `channels.slack` additions on top of nanobot's existing Slack config
+### `channels.slack` additions on top of the existing Slack config
 
 | Field | Default | Notes |
 |---|---|---|
@@ -210,7 +210,7 @@ If either piece breaks, the symptom is silent: the LLM happily calls `granola_li
 - **No background ingestion / vector store / cache.** Every query hits GitHub and Granola live. If a project gets large enough that "what shipped this quarter?" times out, that's the signal to add a nightly index for *closed* PRs and *past* meetings — not before.
 - **No multi-workspace Slack support.** One workspace per process.
 - **No permission system beyond Slack channel membership.** If you can see the channel, you can ask the bot project questions. The bot's GitHub token and Granola token determine the upper bound on what data it can actually fetch.
-- **No standalone Granola MCP server.** The original design called for an MCP server; we built an in-tree nanobot tool instead. Cheaper to ship, easier to test, and an MCP server can wrap the tool later without changing the skill.
+- **No standalone Granola MCP server.** The original design called for an MCP server; we built an in-tree tool instead. Cheaper to ship, easier to test, and an MCP server can wrap the tool later without changing the skill.
 
 ---
 
@@ -262,4 +262,4 @@ tests/
 
 ## License
 
-Same as [nanobot](LICENSE) — MIT.
+MIT — see [LICENSE](LICENSE).
