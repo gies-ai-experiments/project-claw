@@ -25,7 +25,7 @@ Filter the result to entries where `isDraft = false` AND
 
 ```bash
 gh pr list --repo <repo> --state merged \
-  --search "merged:>=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)" \
+  --search "repo:<repo> merged:>=$(date -u -v-1d +%Y-%m-%dT%H:%M:%SZ)" \
   --json number,title,url,author,mergedAt
 ```
 
@@ -33,9 +33,14 @@ Adjust the `-v-1d` to `-v-7d` for the weekly window.
 
 ## Issues activity in the last 7 days
 
+**CRITICAL:** the `repo:<repo>` qualifier must appear INSIDE the search
+string. Without it, `gh` falls back to a global GitHub issue search and
+silently returns results from random unrelated repos — `--repo` alone
+is not enough when the search clause contains an `OR`.
+
 ```bash
 gh issue list --repo <repo> --state all \
-  --search "created:>=$(date -u -v-7d +%Y-%m-%d) OR closed:>=$(date -u -v-7d +%Y-%m-%d)" \
+  --search "repo:<repo> (created:>=$(date -u -v-7d +%Y-%m-%d) OR closed:>=$(date -u -v-7d +%Y-%m-%d))" \
   --json number,title,url,state,createdAt,closedAt
 ```
 

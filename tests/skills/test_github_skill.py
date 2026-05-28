@@ -59,6 +59,42 @@ def test_github_skill_provides_issues_query(loader: SkillsLoader) -> None:
     assert re.search(r"gh issue list .*--search.*created:.*closed:", body, re.DOTALL)
 
 
+def test_github_skill_issue_search_uses_repo_qualifier(loader: SkillsLoader) -> None:
+    """Regression: without `repo:<repo>` INSIDE --search, an OR clause makes gh
+    fall back to a GLOBAL issues search and return issues from random repos.
+    The `--repo` flag alone is insufficient. See the MindForum incident
+    on 2026-05-28: the bot was handed issues from Andrei-Ciuperca/Practica_Anul_4,
+    ChanyaVRC/pyrust, etc. — completely unrelated repos.
+    """
+    body = loader.load_skill("github") or ""
+    # The issues query section must include `repo:<repo>` in the search string.
+    match = re.search(
+        r"gh issue list .*--search\s+\"repo:<repo>.*created:.*closed:",
+        body,
+        re.DOTALL,
+    )
+    assert match is not None, (
+        "issues query is missing `repo:<repo>` inside --search; "
+        "this leaks results from unrelated repos when the search has an OR."
+    )
+
+
+def test_github_skill_pr_merged_search_uses_repo_qualifier(loader: SkillsLoader) -> None:
+    """Defensive: PR merged query also uses `repo:<repo>` inside --search,
+    so it stays correct even if the search clause later grows an OR.
+    """
+    body = loader.load_skill("github") or ""
+    match = re.search(
+        r"gh pr list .*--state merged.*--search\s+\"repo:<repo>.*merged:",
+        body,
+        re.DOTALL,
+    )
+    assert match is not None, (
+        "PR merged query is missing `repo:<repo>` inside --search; "
+        "future edits adding an OR clause could silently leak."
+    )
+
+
 def test_github_skill_requires_partial_answer_on_failure(loader: SkillsLoader) -> None:
     body = loader.load_skill("github") or ""
     assert re.search(r"surface the failure", body, re.IGNORECASE)
