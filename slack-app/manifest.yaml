@@ -1,0 +1,56 @@
+# Slack app manifest for projectclaw (nanobot-based, self-hosted, Socket Mode).
+#
+# Paste this into https://api.slack.com/apps → "Create New App" → "From a manifest".
+# Or validate locally:  slack manifest validate --manifest slack-app/manifest.yaml
+#
+# Scopes and event subscriptions are derived from nanobot/channels/slack.py:
+#   - subscribes to app_mention + message.* (the handler at _on_socket_request)
+#   - reads thread context via conversations.replies → *:history scopes
+#   - lists channels/users to resolve names → IDs
+#   - posts via chat.postMessage and uploads via files.upload_v2
+#   - adds/removes :eyes:/:white_check_mark: reactions
+#   - opens DMs via conversations.open
+#   - handles block button clicks → interactivity enabled
+
+display_information:
+  name: projectclaw
+  description: Multi-project assistant — answers team questions about projects from GitHub and Granola, scoped per Slack channel.
+  background_color: "#0f1419"
+
+features:
+  bot_user:
+    display_name: projectclaw
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read    # receive app_mention events
+      - channels:history     # read public channel messages for thread context
+      - channels:read        # list channels (resolve name → ID)
+      - chat:write           # post replies
+      - files:read           # download files the user attaches
+      - groups:history       # private channel messages
+      - groups:read          # list private channels
+      - im:history           # DM history (thread context inside DMs)
+      - im:read              # list DMs
+      - im:write             # open a DM channel
+      - mpim:history         # group DM history
+      - mpim:read            # list group DMs
+      - mpim:write           # open group DMs
+      - reactions:write      # add :eyes: on receive, :white_check_mark: on reply
+      - users:read           # resolve @handle → user ID
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: true         # block button clicks reach _handle_block_actions
+  org_deploy_enabled: false
+  socket_mode_enabled: true  # self-hosted; no public webhook URL needed
+  token_rotation_enabled: false

@@ -99,3 +99,8 @@ temp/
 *.tmp
 exp/
 .playwright-mcp/
+
+# Personal scratch files (per global CLAUDE.md convention; never tracked)
+/learnings.md
+/short_term_memory.md
+/long_term_memory.md
