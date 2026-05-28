@@ -44,7 +44,7 @@ def test_projectclaw_skill_loads_with_expected_frontmatter(loader: SkillsLoader)
 
 def test_projectclaw_skill_forbids_out_of_scope_tool_calls(loader: SkillsLoader) -> None:
     body = loader.load_skill("projectclaw") or ""
-    # Must explicitly forbid calling tools with repos/tags not in metadata.project.
+    # Must explicitly forbid calling tools with repos/folder_ids not in metadata.project.
     assert re.search(r"never.*tool.*(outside|not in)", body, re.IGNORECASE | re.DOTALL), (
         "skill must forbid out-of-scope tool calls"
     )
@@ -87,7 +87,7 @@ def test_metadata_project_shape_matches_skill_contract() -> None:
                 "C0123ABCDE": {
                     "name": "foo",
                     "github": {"repos": ["acme/foo-api"]},
-                    "granola": {"tag": "foo"},
+                    "granola": {"folder_id": "fld_foo"},
                 }
             }
         }
@@ -95,7 +95,7 @@ def test_metadata_project_shape_matches_skill_contract() -> None:
     dumped = cfg.project_map["C0123ABCDE"].model_dump()
     assert dumped["name"] == "foo"
     assert dumped["github"]["repos"] == ["acme/foo-api"]
-    assert dumped["granola"]["tag"] == "foo"
+    assert dumped["granola"]["folder_id"] == "fld_foo"
 
     # Optional sources must serialise as None (not missing) so the skill's
     # ``| null`` reading is true.

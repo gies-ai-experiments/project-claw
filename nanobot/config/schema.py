@@ -37,14 +37,19 @@ class GitHubProjectConfig(Base):
 
 
 class GranolaProjectConfig(Base):
-    """Granola portion of a projectclaw Project."""
+    """Granola portion of a projectclaw Project.
 
-    tag: str
+    folder_id is the Granola folder ID (e.g. "fld_…") that scopes which meeting
+    notes count as belonging to this project. Folders are Granola's primary
+    organizational unit — see the GET /v1/folders endpoint.
+    """
+
+    folder_id: str
 
     @model_validator(mode="after")
-    def _require_nonempty_tag(self) -> "GranolaProjectConfig":
-        if not self.tag.strip():
-            raise ValueError("granola.tag must be a non-empty string")
+    def _require_nonempty_folder_id(self) -> "GranolaProjectConfig":
+        if not self.folder_id.strip():
+            raise ValueError("granola.folder_id must be a non-empty string")
         return self
 
 

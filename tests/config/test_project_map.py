@@ -23,9 +23,9 @@ def test_project_with_github_only_is_valid():
 
 
 def test_project_with_granola_only_is_valid():
-    p = Project.model_validate({"name": "foo", "granola": {"tag": "foo"}})
+    p = Project.model_validate({"name": "foo", "granola": {"folder_id": "fld_foo"}})
     assert p.granola is not None
-    assert p.granola.tag == "foo"
+    assert p.granola.folder_id == "fld_foo"
     assert p.github is None
 
 
@@ -40,11 +40,11 @@ def test_project_with_both_sources_is_valid():
         {
             "name": "foo",
             "github": {"repos": ["acme/foo-api", "acme/foo-web"]},
-            "granola": {"tag": "foo"},
+            "granola": {"folder_id": "fld_foo"},
         }
     )
     assert p.github.repos == ["acme/foo-api", "acme/foo-web"]
-    assert p.granola.tag == "foo"
+    assert p.granola.folder_id == "fld_foo"
 
 
 def test_github_project_requires_at_least_one_repo():
@@ -52,7 +52,7 @@ def test_github_project_requires_at_least_one_repo():
         GitHubProjectConfig.model_validate({"repos": []})
 
 
-def test_granola_project_requires_nonempty_tag():
+def test_granola_project_requires_nonempty_folder_id():
     with pytest.raises(ValidationError):
         GranolaProjectConfig.model_validate({"tag": ""})
 
