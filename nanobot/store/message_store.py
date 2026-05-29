@@ -27,6 +27,11 @@ class MessageStore:
     def __init__(self, conn: asyncpg.Connection | asyncpg.Pool):
         self._conn = conn
 
+    @property
+    def conn(self) -> asyncpg.Connection | asyncpg.Pool:
+        """The underlying connection/pool (shared with other store helpers)."""
+        return self._conn
+
     async def append(self, a: AppendArgs) -> Optional[int]:
         body = a.body
         if a.role == "tool" and len(body) > TOOL_BODY_MAX:

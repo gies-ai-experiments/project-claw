@@ -704,6 +704,42 @@ def gateway(
     _run_gateway(cfg, port=port)
 
 
+async def _setup_agent_memory(agent: AgentLoop, config: Config):
+    """Wire the Postgres memory store into the loop, gated by cfg.memory.active.
+
+    Returns the asyncpg pool (to close on shutdown) or None. Any failure is
+    logged and swallowed so the gateway still starts without memory.
+    """
+    if not config.memory.active:
+        return None
+    try:
+        from nanobot.channels.project_resolver import ProjectResolver
+        from nanobot.channels.slack import SlackConfig
+        from nanobot.store.message_store import MessageStore
+        from nanobot.store.migrations import apply_migrations
+        from nanobot.store.pool import init_pool
+        from nanobot.store.registry_sync import sync_project_registry
+
+        pool = await init_pool(config.memory.dsn)
+        async with pool.acquire() as conn:
+            await apply_migrations(conn)
+            slack_raw = getattr(config.channels, "slack", None)
+            if slack_raw:
+                slack_cfg = (
+                    slack_raw if isinstance(slack_raw, SlackConfig)
+                    else SlackConfig.model_validate(slack_raw)
+                )
+                await sync_project_registry(conn, slack_cfg)
+        agent.attach_memory(
+            MessageStore(pool), ProjectResolver(pool), config.memory.inject_limit
+        )
+        logger.info("project-context-db memory active (dsn configured)")
+        return pool
+    except Exception as exc:  # noqa: BLE001 - never block gateway startup
+        logger.warning("memory setup failed; continuing without memory: {}", exc)
+        return None
+
+
 def _run_gateway(
     config: Config,
     *,
@@ -1065,7 +1101,9 @@ def _run_gateway(
             console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
 
     async def run():
+        memory_pool = None
         try:
+            memory_pool = await _setup_agent_memory(agent, config)
             await cron.start()
             await heartbeat.start()
             tasks = [
@@ -1095,6 +1133,9 @@ def _run_gateway(
             flushed = agent.sessions.flush_all()
             if flushed:
                 logger.info("Shutdown: flushed {} session(s) to disk", flushed)
+            if memory_pool is not None:
+                with suppress(Exception):
+                    await memory_pool.close()
 
     asyncio.run(run())
 

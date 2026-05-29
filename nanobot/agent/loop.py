@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import os
 import time
+import uuid
 from contextlib import AsyncExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -196,6 +197,9 @@ class AgentLoop:
         model_preset: str | None = None,
         preset_snapshot_loader: preset_helpers.PresetSnapshotLoader | None = None,
         runtime_model_publisher: Callable[[str, str | None], None] | None = None,
+        message_store: Any = None,
+        project_resolver: Any = None,
+        memory_inject_limit: int = 20,
     ):
         from nanobot.config.schema import ToolsConfig
 
@@ -315,6 +319,12 @@ class AgentLoop:
         self._active_preset: str | None = None
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
+        # Postgres-backed memory (project-context-db). None unless wired at boot
+        # behind cfg.memory.active; all uses are guarded so a DB hiccup can never
+        # break a turn.
+        self._message_store = message_store
+        self._project_resolver = project_resolver
+        self._memory_inject_limit = memory_inject_limit
         self._register_default_tools()
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
@@ -481,7 +491,32 @@ class AgentLoop:
             )
             registered.append("my")
 
+        # project_context_search needs the live pool — manual registration, only
+        # when the memory store is wired in.
+        if self._message_store is not None:
+            from nanobot.agent.tools.project_context import ProjectContextSearchTool
+
+            self.tools.register(ProjectContextSearchTool(pool=self._message_store.conn))
+            registered.append("project_context_search")
+
         logger.info("Registered {} tools: {}", len(registered), registered)
+
+    def attach_memory(
+        self, message_store: Any, project_resolver: Any = None, inject_limit: int = 20
+    ) -> None:
+        """Wire the Postgres memory store into a live loop (called at boot).
+
+        Idempotent: registers the project_context_search tool once. Used by the
+        gateway because the asyncpg pool is created in async startup, after the
+        loop is constructed.
+        """
+        self._message_store = message_store
+        self._project_resolver = project_resolver
+        self._memory_inject_limit = inject_limit
+        if message_store is not None and not self.tools.has("project_context_search"):
+            from nanobot.agent.tools.project_context import ProjectContextSearchTool
+
+            self.tools.register(ProjectContextSearchTool(pool=message_store.conn))
 
     async def _connect_mcp(self) -> None:
         """Connect configured MCP servers."""
@@ -573,6 +608,7 @@ class AgentLoop:
         session: Session,
         history: list[dict[str, Any]],
         pending_summary: str | None,
+        conversation_memory: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         return self.context.build_messages(
@@ -584,7 +620,133 @@ class AgentLoop:
             sender_id=msg.sender_id,
             session_summary=pending_summary,
             session_metadata=session.metadata, current_runtime_lines=agent_context.runtime_lines(self, msg, self.context.workspace),
+            conversation_memory=conversation_memory,
         )
+
+    # --- Postgres-backed memory (project-context-db) -------------------------
+    # Every helper is a no-op when the store/resolver is absent, and any error
+    # is swallowed with a warning: memory must never break a live turn.
+
+    @staticmethod
+    def _memory_keys(msg: InboundMessage) -> tuple[str, str, str]:
+        """Return (channel_id, thread_ts, inbound_ts) for the L1 store."""
+        meta = msg.metadata or {}
+        slack = meta.get("slack") or {}
+        channel_id = msg.chat_id
+        thread_ts = slack.get("thread_ts") or msg.session_key or msg.chat_id
+        inbound_ts = (
+            (slack.get("event") or {}).get("ts")
+            or meta.get("message_id")
+            or f"in_{uuid.uuid4().hex}"
+        )
+        return channel_id, str(thread_ts), str(inbound_ts)
+
+    @staticmethod
+    def _render_memory_body(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") in (None, "text") and block.get("text"):
+                        parts.append(str(block["text"]))
+                    elif block.get("type") == "tool_result" and block.get("content"):
+                        parts.append(AgentLoop._render_memory_body(block["content"]))
+                else:
+                    parts.append(str(block))
+            return "\n".join(p for p in parts if p)
+        return str(content) if content is not None else ""
+
+    async def _memory_resolve_project(self, ctx: TurnContext) -> None:
+        if self._project_resolver is None:
+            return
+        try:
+            from nanobot.channels.project_resolver import ResolveInput
+
+            channel_id, thread_ts, _ = self._memory_keys(ctx.msg)
+            res = await self._project_resolver.resolve(
+                ResolveInput(channel_id=channel_id, thread_ts=thread_ts,
+                             body=ctx.msg.content or "")
+            )
+            meta = ctx.msg.metadata
+            if not isinstance(meta, dict):
+                return
+            if res.project_id:
+                meta["project_id"] = res.project_id
+                existing = meta.get("project")
+                if not (isinstance(existing, dict) and existing.get("name") == res.project_id):
+                    meta["project"] = {"name": res.project_id}
+            elif res.ambiguous and res.candidates:
+                meta["project_ambiguous"] = True
+                meta["project_candidates"] = res.candidates
+        except Exception as exc:  # noqa: BLE001 - memory must not break a turn
+            logger.warning("memory: project resolve failed: {}", exc)
+
+    async def _memory_fetch_block(self, ctx: TurnContext) -> str | None:
+        if self._message_store is None:
+            return None
+        try:
+            channel_id, thread_ts, _ = self._memory_keys(ctx.msg)
+            block = await agent_context.conversation_memory_block(
+                self._message_store, channel_id, thread_ts,
+                limit=self._memory_inject_limit,
+            )
+            return block or None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("memory: L1 fetch failed: {}", exc)
+            return None
+
+    async def _memory_persist_inbound(self, ctx: TurnContext) -> None:
+        if self._message_store is None:
+            return
+        try:
+            from nanobot.store.message_store import AppendArgs
+
+            channel_id, thread_ts, inbound_ts = self._memory_keys(ctx.msg)
+            meta = ctx.msg.metadata or {}
+            await self._message_store.append(AppendArgs(
+                channel_type=ctx.msg.channel,
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                project_id=meta.get("project_id"),
+                user_id=ctx.msg.sender_id,
+                role="user",
+                body=ctx.msg.content or "",
+                slack_ts=inbound_ts,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("memory: inbound persist failed: {}", exc)
+
+    async def _memory_persist_outbound(self, ctx: TurnContext) -> None:
+        if self._message_store is None:
+            return
+        try:
+            from nanobot.store.message_store import AppendArgs
+
+            channel_id, thread_ts, _ = self._memory_keys(ctx.msg)
+            meta = ctx.msg.metadata or {}
+            project_id = meta.get("project_id")
+            new_messages = (ctx.all_messages or [])[ctx.save_skip:]
+            for m in new_messages:
+                role = m.get("role")
+                if role not in ("assistant", "tool"):
+                    continue
+                body = self._render_memory_body(m.get("content"))
+                if not body:
+                    continue
+                await self._message_store.append(AppendArgs(
+                    channel_type=ctx.msg.channel,
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    project_id=project_id,
+                    user_id=None,
+                    role=role,
+                    body=body,
+                    slack_ts=f"{role[:4]}_{uuid.uuid4().hex}",
+                ))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("memory: outbound persist failed: {}", exc)
 
     async def _dispatch_command_inline(
         self,
@@ -1276,6 +1438,8 @@ class AgentLoop:
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
+        # Resolve the project FIRST so tool context + runtime lines see project_id.
+        await self._memory_resolve_project(ctx)
         await self.consolidator.maybe_consolidate_by_tokens(
             ctx.session,
             replay_max_messages=self._max_messages,
@@ -1303,8 +1467,14 @@ class AgentLoop:
             self.llm_runtime(),
         )
 
+        # Fetch the L1 block (prior thread) BEFORE persisting this turn's inbound,
+        # so the block is history and the current message is the live turn.
+        conversation_memory = await self._memory_fetch_block(ctx)
+        await self._memory_persist_inbound(ctx)
+
         ctx.initial_messages = self._build_initial_messages(
-            ctx.msg, ctx.session, ctx.history, ctx.pending_summary
+            ctx.msg, ctx.session, ctx.history, ctx.pending_summary,
+            conversation_memory=conversation_memory,
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session
@@ -1352,6 +1522,7 @@ class AgentLoop:
             ctx.session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
         )
+        await self._memory_persist_outbound(ctx)
         if ctx.msg.channel == "websocket":
             self._pending_turn_latency_ms[ctx.session_key] = ctx.turn_latency_ms
         ctx.session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
