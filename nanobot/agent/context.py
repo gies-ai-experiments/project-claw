@@ -6,14 +6,14 @@ import platform
 from contextlib import suppress
 from importlib.resources import files as pkg_files
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.agent.tools import mcp as mcp_tools
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus.events import InboundMessage
 from nanobot.apps.cli import utils as cli_app_utils
+from nanobot.bus.events import InboundMessage
 from nanobot.session.goal_state import goal_state_runtime_lines
 from nanobot.utils.helpers import (
     current_time_str,
@@ -21,6 +21,31 @@ from nanobot.utils.helpers import (
     truncate_text,
 )
 from nanobot.utils.prompt_templates import render_template
+
+if TYPE_CHECKING:
+    from nanobot.store.message_store import MessageStore
+
+CONVERSATION_MEMORY_TAG = "[Conversation Memory]"
+
+
+async def conversation_memory_block(
+    store: "MessageStore", channel_id: str, thread_ts: str, limit: int = 20
+) -> str:
+    """Render the recent (L1) thread history as a prependable context block.
+
+    Returns "" when the thread has no stored history, so callers can skip the
+    block cleanly.
+    """
+    rows = await store.fetch_thread(channel_id, thread_ts, limit=limit)
+    if not rows:
+        return ""
+    lines = []
+    for r in rows:
+        if r["role"] == "tool":
+            lines.append(f"[tool] {r['body']}")
+        else:
+            lines.append(f"[{r['role']}] {r['body']}")
+    return CONVERSATION_MEMORY_TAG + "\n" + "\n".join(lines)
 
 
 def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
