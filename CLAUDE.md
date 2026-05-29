@@ -82,3 +82,12 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full two-branch model (`main`
 - Tool registry: `nanobot/agent/tools/registry.py`
 - WebUI dev proxy config: `webui/vite.config.ts`
 - Tests mirror the `nanobot/` package structure.
+
+## Completed Work
+
+### 2026-05-28 — project-context-db Phase 1 (`feat/project-context-db`)
+- **Built:** a Postgres+pgvector three-layer memory. L1 = raw per-thread conversation log (`nanobot/store/`: `pool.py`, `migrations.py` + `migrations/*.sql`, `message_store.py`); project resolution (`nanobot/channels/project_resolver.py`, sticky per-thread, multi-project per channel); L2 distilled facts table + `project_context_search` tool (`nanobot/agent/tools/project_context.py`, FTS + optional hybrid pgvector); `registry_sync` to hydrate the registry from config; `embeddings.py` (OpenAIEmbedder + hybrid path, used in Phase 2).
+- **Wiring:** all memory work is centralized in `AgentLoop` (channel-agnostic) — it resolves the project, persists inbound/assistant/tool rows, and injects the L1 `[Conversation Memory]` block per turn. Gateway boot (`_setup_agent_memory` in `cli/commands.py`) creates the pool, runs migrations + registry sync, and attaches the store — all gated by `cfg.memory.active`.
+- **Key decisions:** project registry is **channel-local** on `SlackConfig` (no `NanobotConfig`); `MemoryConfig.enabled` defaults true but `active` requires a `dsn` (inert otherwise); changes are additive/backward-compatible (`AgentRunner` untouched; persistence at the loop level, not the runner); every memory op is guarded so it can never break a live turn.
+- **Conventions:** all store SQL in numbered `nanobot/store/migrations/*.sql` (bundled into the wheel via hatch `include`); migration runner sets `search_path TO "<schema>", public` so the pgvector type resolves; tests use the repo-root `tests/conftest.py` `pg_schema` throwaway-schema fixture and skip when no Postgres is reachable.
+- **Status:** Tasks 1–15 done, all tested (full suite 3803 passed / 2 skipped). **Pending: live Slack smoke test** (set `memory.dsn`, run the docker-compose postgres) and **Phase 2** (Tasks 16–24: nightly distiller, L3 learnings, `learning_search`/`remember_learning`, cron).
