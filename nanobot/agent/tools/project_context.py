@@ -14,6 +14,12 @@ import asyncpg
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import RequestContext
 
+# Hybrid weights (tunable): semantic vs full-text. Facts within this cosine
+# distance of the query also qualify even without a keyword hit.
+_SEMANTIC_WEIGHT = 0.6
+_FTS_WEIGHT = 0.4
+_SEMANTIC_MAX_DISTANCE = 0.5
+
 
 async def search_project_context(
     conn: asyncpg.Connection | asyncpg.Pool,
@@ -21,8 +27,58 @@ async def search_project_context(
     query: str,
     kind: Optional[str] = None,
     limit: int = 8,
+    embedder: Any = None,
 ) -> list[dict[str, Any]]:
-    """Full-text search current (non-superseded) facts for one project."""
+    """Search current (non-superseded) facts for one project.
+
+    FTS-only by default. When an ``embedder`` is supplied, the query is embedded
+    and results are ranked by a weighted blend of full-text rank and semantic
+    similarity (pgvector cosine), also surfacing semantically-close facts that
+    share no keywords.
+    """
+    if embedder is None:
+        return await _search_fts(conn, project_id, query, kind, limit)
+
+    vecs = await embedder.embed([query])
+    qvec = vecs[0] if vecs else None
+    if not qvec:
+        return await _search_fts(conn, project_id, query, kind, limit)
+
+    from nanobot.store.embeddings import to_pgvector
+
+    sql = f"""
+        SELECT id, kind, subject, body, source_message_ids, created_at,
+               (
+                 {_FTS_WEIGHT} * ts_rank_cd(
+                   to_tsvector('english', subject || ' ' || body),
+                   plainto_tsquery('english', $2))
+                 + {_SEMANTIC_WEIGHT} * (
+                   CASE WHEN embedding IS NULL THEN 0
+                        ELSE 1 - (embedding <=> $5::vector) END)
+               ) AS score
+        FROM project_facts
+        WHERE project_id = $1
+          AND superseded_by IS NULL
+          AND ($3::text IS NULL OR kind = $3)
+          AND (
+            to_tsvector('english', subject || ' ' || body)
+              @@ plainto_tsquery('english', $2)
+            OR (embedding IS NOT NULL AND (embedding <=> $5::vector) < {_SEMANTIC_MAX_DISTANCE})
+          )
+        ORDER BY score DESC
+        LIMIT $4
+    """
+    rows = await conn.fetch(sql, project_id, query, kind, limit, to_pgvector(qvec))
+    return [dict(r) for r in rows]
+
+
+async def _search_fts(
+    conn: asyncpg.Connection | asyncpg.Pool,
+    project_id: str,
+    query: str,
+    kind: Optional[str],
+    limit: int,
+) -> list[dict[str, Any]]:
     sql = """
         SELECT id, kind, subject, body, source_message_ids, created_at,
                ts_rank_cd(
