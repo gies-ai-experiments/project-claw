@@ -247,8 +247,14 @@ class ContextBuilder:
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         current_runtime_lines: Sequence[str] | None = None,
+        conversation_memory: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build the complete message list for an LLM call."""
+        """Build the complete message list for an LLM call.
+
+        ``conversation_memory`` is the L1 [Conversation Memory] block (from the
+        Postgres store); when present it is inserted as a system message after
+        the main system prompt and before replayed history.
+        """
         extra = [
             *goal_state_runtime_lines(session_metadata),
         ]
@@ -271,10 +277,12 @@ class ContextBuilder:
             merged = f"{user_content}\n\n{runtime_ctx}"
         else:
             merged = user_content + [{"type": "text", "text": runtime_ctx}]
-        messages = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary)},
-            *history,
         ]
+        if conversation_memory:
+            messages.append({"role": "system", "content": conversation_memory})
+        messages.extend(history)
         if messages[-1].get("role") == current_role:
             last = dict(messages[-1])
             last["content"] = self._merge_message_content(last.get("content"), merged)
