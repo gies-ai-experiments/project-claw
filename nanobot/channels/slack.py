@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from loguru import logger
 from pydantic import Field, model_validator
 from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
@@ -30,6 +31,21 @@ class SlackDMConfig(Base):
     allow_from: list[str] = Field(default_factory=list)
 
 
+class ProjectChannel(Base):
+    """Which projects a single Slack channel may host.
+
+    Replaces the one-project-per-channel `project_map`: a channel can list several
+    `allowed_projects`, with an optional `default_project` used when a turn does not
+    name one explicitly.
+    """
+
+    allowed_projects: list[str] = Field(default_factory=list)
+    default_project: str | None = None
+
+
+_PROJECT_MAP_DEPRECATION_WARNED = False
+
+
 class SlackConfig(Base):
     """Slack channel configuration."""
 
@@ -48,8 +64,14 @@ class SlackConfig(Base):
     group_policy: str = "mention"
     group_allow_from: list[str] = Field(default_factory=list)
     dm: SlackDMConfig = Field(default_factory=SlackDMConfig)
+    # Legacy: one project per channel. Kept for back-compat; superseded by
+    # `projects` + `project_channels` below (a channel can host many projects).
     project_map: dict[str, Project] = Field(default_factory=dict)
     default_project: str | None = None
+
+    # New multi-project registry (channel-local).
+    projects: dict[str, Project] = Field(default_factory=dict)
+    project_channels: dict[str, ProjectChannel] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _validate_project_map(self) -> "SlackConfig":
@@ -65,6 +87,31 @@ class SlackConfig(Base):
                 raise ValueError(
                     f"default_project '{self.default_project}' is not present in project_map"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _shim_legacy_project_map(self) -> "SlackConfig":
+        """Project the legacy `project_map` into `projects` + `project_channels`.
+
+        Additive only — the legacy fields are left intact so existing readers
+        (`slack.py` resolution, older tests) keep working.
+        """
+        if not self.project_map:
+            return self
+        for channel_id, project in self.project_map.items():
+            self.projects.setdefault(project.name, project)
+            pc = self.project_channels.setdefault(channel_id, ProjectChannel())
+            if project.name not in pc.allowed_projects:
+                pc.allowed_projects.append(project.name)
+            if self.default_project == project.name and pc.default_project is None:
+                pc.default_project = project.name
+        global _PROJECT_MAP_DEPRECATION_WARNED
+        if not _PROJECT_MAP_DEPRECATION_WARNED:
+            logger.warning(
+                "slack.project_map is deprecated; migrate to slack.projects + "
+                "slack.projectChannels (allowedProjects / defaultProject per channel)"
+            )
+            _PROJECT_MAP_DEPRECATION_WARNED = True
         return self
 
 
