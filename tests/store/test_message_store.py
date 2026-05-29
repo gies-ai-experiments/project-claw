@@ -79,3 +79,47 @@ async def test_tool_row_body_truncated_to_500_chars(pg_schema):
     )
     # JSONB round-trips; asyncpg returns it as a JSON string by default.
     assert "exec" in tool_calls
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_returns_messages_in_order(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    store = MessageStore(conn=conn)
+    for i, txt in enumerate(["first", "second", "third"]):
+        await store.append(
+            AppendArgs(
+                channel_type="slack",
+                channel_id="C1",
+                thread_ts="t1",
+                project_id="mindforum",
+                user_id="U1",
+                role="user",
+                body=txt,
+                slack_ts=f"172{i}.0",
+            )
+        )
+    rows = await store.fetch_thread("C1", "t1", limit=10)
+    assert [r["body"] for r in rows] == ["first", "second", "third"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_respects_limit(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    store = MessageStore(conn=conn)
+    for i in range(5):
+        await store.append(
+            AppendArgs(
+                channel_type="slack",
+                channel_id="C1",
+                thread_ts="t1",
+                project_id="mindforum",
+                user_id="U1",
+                role="user",
+                body=f"m{i}",
+                slack_ts=f"172{i}.0",
+            )
+        )
+    rows = await store.fetch_thread("C1", "t1", limit=2)
+    assert [r["body"] for r in rows] == ["m3", "m4"]  # last 2, oldest-first

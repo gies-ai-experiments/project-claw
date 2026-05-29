@@ -1,9 +1,10 @@
-"""Shared fixtures for store tests.
+"""Repo-wide fixtures.
 
-Each test gets a throwaway Postgres schema so tests are fully isolated and
-self-cleaning. Point `PROJECTCLAW_TEST_PG_DSN` at a reachable pgvector instance
-(defaults to the docker-compose service on :5432). Tests are skipped — not
-failed — when no Postgres is reachable, so the rest of the suite stays green.
+`pg_schema` gives each test a throwaway Postgres schema (used by store, channel,
+agent and tool tests), so it lives at the tests root rather than under tests/store.
+Point `PROJECTCLAW_TEST_PG_DSN` at a reachable pgvector instance (defaults to the
+docker-compose service on :5432). Tests are skipped — not failed — when no Postgres
+is reachable, so the rest of the suite stays green.
 """
 from __future__ import annotations
 

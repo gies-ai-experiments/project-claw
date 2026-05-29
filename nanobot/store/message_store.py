@@ -51,3 +51,27 @@ class MessageStore:
             json.dumps(a.tool_calls) if a.tool_calls else None,
             a.slack_ts,
         )
+
+    async def fetch_thread(
+        self, channel_id: str, thread_ts: str, limit: int = 20
+    ) -> list[asyncpg.Record]:
+        """Return the most recent ``limit`` messages for a thread, oldest-first.
+
+        Tie-break on ``id`` so insertion order is deterministic even when several
+        rows share a ``created_at`` (now() has coarse resolution under load).
+        """
+        return await self._conn.fetch(
+            """
+            SELECT * FROM (
+                SELECT id, role, body, user_id, tool_calls, created_at
+                FROM messages
+                WHERE channel_id = $1 AND thread_ts = $2
+                ORDER BY created_at DESC, id DESC
+                LIMIT $3
+            ) AS recent
+            ORDER BY created_at ASC, id ASC
+            """,
+            channel_id,
+            thread_ts,
+            limit,
+        )
