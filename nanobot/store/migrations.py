@@ -15,7 +15,10 @@ async def apply_migrations(conn: asyncpg.Connection, schema: str | None = None) 
     each; ``schema_version`` records applied versions so re-running is a no-op.
     """
     if schema:
-        await conn.execute(f'SET search_path TO "{schema}"')
+        # Keep `public` on the path so shared extensions (e.g. the pgvector
+        # `vector` type, conventionally installed in public) resolve while app
+        # tables are still created in the target schema (first on the path).
+        await conn.execute(f'SET search_path TO "{schema}", public')
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_version (

@@ -57,6 +57,33 @@ async def test_apply_migrations_creates_project_registry_and_lock(pg_schema):
 
 
 @pytest.mark.asyncio
+async def test_apply_migrations_creates_project_facts(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    cols = {
+        r["column_name"]
+        for r in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=$1 AND table_name='project_facts'",
+            schema,
+        )
+    }
+    assert {
+        "id",
+        "project_id",
+        "kind",
+        "subject",
+        "body",
+        "source_message_ids",
+        "confidence",
+        "distiller_version",
+        "embedding",
+        "created_at",
+        "superseded_by",
+    } <= cols
+
+
+@pytest.mark.asyncio
 async def test_apply_migrations_is_idempotent(pg_schema):
     schema, conn = pg_schema
     await apply_migrations(conn, schema=schema)
