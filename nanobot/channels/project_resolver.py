@@ -85,6 +85,12 @@ class ProjectResolver:
         if len(candidates) == 1:
             return await self._lock(inp, next(iter(candidates)))
 
+        # 5. A channel with exactly one allowed project is unambiguous even when
+        #    the message names nothing — default to it (preserves the legacy
+        #    one-project-per-channel project_map behavior).
+        if not candidates and len(allowed) == 1:
+            return await self._lock(inp, next(iter(allowed)))
+
         return ResolveResult(
             project_id=None,
             ambiguous=True,

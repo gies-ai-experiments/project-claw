@@ -47,6 +47,27 @@ async def test_locked_thread_returns_cached_project(pg_schema):
 
 
 @pytest.mark.asyncio
+async def test_single_allowed_project_defaults_without_mention(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    await conn.execute(
+        "INSERT INTO project_registry (project_id, allowed_channels) "
+        "VALUES ('projectclaw', ARRAY['C1'])"
+    )
+    resolver = ProjectResolver(conn=conn)
+    out = await resolver.resolve(
+        ResolveInput(channel_id="C1", thread_ts="t1", body="hi")
+    )
+    assert out.project_id == "projectclaw"
+    assert out.locked is True
+    locked = await conn.fetchval(
+        "SELECT project_id FROM thread_project_lock "
+        "WHERE channel_id='C1' AND thread_ts='t1'"
+    )
+    assert locked == "projectclaw"
+
+
+@pytest.mark.asyncio
 async def test_zero_candidates_returns_ambiguous(pg_schema):
     schema, conn = pg_schema
     await apply_migrations(conn, schema=schema)
