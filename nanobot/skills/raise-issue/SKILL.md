@@ -31,26 +31,37 @@ turns plus any `[Conversation Memory]` block). Do not invent details. If the
 thread is too thin to make a real issue, say so and ask the user for a one-line
 problem statement instead of fabricating content.
 
-## Step 3 — Draft the issue (structured template)
+## Step 3 — Draft the issue (keep it clear, not heavily formatted)
 
-Draft a **title** and a **body** with these sections:
+Produce two things: a **title** and a **body**.
+
+- **Title:** one clear, specific line naming the issue (no markdown, no
+  trailing period).
+- **Body:** a clear plain-language description — 2–4 sentences on the problem or
+  proposal and why it matters — followed only if useful by a short `-` bulleted
+  list of key points and a short list of any open questions. End with a single
+  line: `Discussed in Slack.`
+
+**Do not** use markdown headers (`#`, `##`) or bold (`**…**`) in the body. Slack
+renders every header and bold run as bold, so a header-heavy draft shows up as a
+wall of bold text. Lead with the title, keep the description readable, use plain
+`-` bullets sparingly. Example shape:
 
 ```
-## Summary
-<1–3 sentences: the problem or proposal>
+<clear description of the problem/proposal, 2–4 sentences>
 
-## Background / Context
-<what the thread surfaced — motivation, constraints, prior art>
+Key points:
+- <point>
+- <point>
 
-## Proposed approach
-<the direction the discussion landed on; bullet steps if helpful>
+Open questions:
+- <question>
 
-## Open questions
-<unresolved points / decisions still needed>
-
----
-_Discussed in Slack._
+Discussed in Slack.
 ```
+
+Omit the "Key points" / "Open questions" lists entirely when there's nothing
+substantive to put in them — don't pad with empty sections.
 
 ## Step 4 — Resolve the target repo
 
@@ -60,8 +71,9 @@ _Discussed in Slack._
 
 ## Step 5 — Confirm before creating
 
-Post the full drafted **title + body** in the thread and ask for explicit
-approval (e.g. "Want me to create this?").
+Post the draft in the thread so it's easy to scan: the title on its own first
+line (e.g. `Title: <title>`), a blank line, then the body. Keep the formatting
+light per Step 3. Ask for explicit approval (e.g. "Want me to create this?").
 
 - If the user asks for changes, re-draft and confirm again.
 - If the user declines, drop it — create nothing.
