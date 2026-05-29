@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from nanobot.agent.tools.project_context import search_project_context
+from nanobot.agent.tools.context import RequestContext
+from nanobot.agent.tools.project_context import (
+    ProjectContextSearchTool,
+    search_project_context,
+)
 from nanobot.store.migrations import apply_migrations
 
 
@@ -70,3 +74,35 @@ async def test_search_filters_by_kind(pg_schema):
         conn, project_id="mindforum", query="auth", kind="open_question", limit=5
     )
     assert [r["kind"] for r in out] == ["open_question"]
+
+
+@pytest.mark.asyncio
+async def test_tool_uses_runtime_project_id_not_model_input(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    await conn.execute(
+        """
+        INSERT INTO project_facts
+          (project_id, kind, subject, body, distiller_version, source_message_ids)
+        VALUES
+          ('mindforum','decision','auth A','We chose A.','v1',ARRAY[1]),
+          ('projectclaw','decision','auth B','We chose B.','v1',ARRAY[2])
+        """
+    )
+    tool = ProjectContextSearchTool(pool=conn)
+    tool.set_context(
+        RequestContext(channel="slack", chat_id="C1", metadata={"project_id": "mindforum"})
+    )
+    out = await tool.execute(query="auth")
+    assert "auth A" in out
+    assert "auth B" not in out  # scoped to runtime project, not model-chosen
+
+
+@pytest.mark.asyncio
+async def test_tool_without_resolved_project_returns_hint(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    tool = ProjectContextSearchTool(pool=conn)
+    tool.set_context(RequestContext(channel="slack", chat_id="C1", metadata={}))
+    out = await tool.execute(query="anything")
+    assert "No project is resolved" in out
