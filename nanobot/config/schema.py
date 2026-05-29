@@ -349,6 +349,23 @@ class ToolsConfig(Base):
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
 
 
+class MemoryConfig(Base):
+    """Postgres-backed three-layer memory (project-context-db).
+
+    Enabled by default, but the system stays inert until a Postgres `dsn` is
+    configured — see `active`. This lets the wiring land without affecting a bot
+    that has no database pointed at it.
+    """
+
+    enabled: bool = True
+    dsn: str | None = None
+    inject_limit: int = 20  # max L1 messages auto-injected per turn
+
+    @property
+    def active(self) -> bool:
+        return self.enabled and bool(self.dsn)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -358,6 +375,7 @@ class Config(BaseSettings):
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=dict,
         validation_alias=AliasChoices("modelPresets", "model_presets"),
