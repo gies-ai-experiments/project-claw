@@ -138,6 +138,9 @@ class ProjectContextSearchTool(Tool):
         "and roles (distilled from past conversations). Scoped to the current project."
     )
     read_only = True
+    # Needs a live asyncpg pool, so it cannot be built by the generic tool loader;
+    # AgentLoop registers it manually when the memory store is attached.
+    _plugin_discoverable = False
 
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
