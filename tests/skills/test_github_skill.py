@@ -59,23 +59,27 @@ def test_github_skill_provides_issues_query(loader: SkillsLoader) -> None:
     assert re.search(r"gh issue list .*--search.*created:.*closed:", body, re.DOTALL)
 
 
-def test_github_skill_issue_search_uses_repo_qualifier(loader: SkillsLoader) -> None:
-    """Regression: without `repo:<repo>` INSIDE --search, an OR clause makes gh
-    fall back to a GLOBAL issues search and return issues from random repos.
-    The `--repo` flag alone is insufficient. See the MindForum incident
-    on 2026-05-28: the bot was handed issues from Andrei-Ciuperca/Practica_Anul_4,
-    ChanyaVRC/pyrust, etc. — completely unrelated repos.
+def test_github_skill_issue_search_has_no_scope_escaping_or(loader: SkillsLoader) -> None:
+    """Regression: an `OR` combining two qualifiers in a `gh issue list --search`
+    clause escapes the `--repo` scope — `gh` falls back to a GLOBAL issues search
+    and returns issues from random unrelated repos.
+
+    MindForum incident (2026-05-28) and recurrence (2026-05-29): the bot was
+    handed issues from Andrei-Ciuperca/Practica_Anul_4, fleetdm/fleet, etc. The
+    earlier mitigation (require `repo:<repo>` INSIDE --search + parentheses) did
+    NOT hold — the model dropped both at runtime. Structural fix: use a single
+    qualifier (`updated:>=`), which `--repo` scopes correctly on its own. Never
+    combine qualifiers with OR.
     """
     body = loader.load_skill("github") or ""
-    # The issues query section must include `repo:<repo>` in the search string.
-    match = re.search(
-        r"gh issue list .*--search\s+\"repo:<repo>.*created:.*closed:",
-        body,
-        re.DOTALL,
+    # The exact footgun: created/closed merged with OR in one search clause.
+    assert "OR closed:" not in body and "OR created:" not in body, (
+        "gh issue list --search must not combine qualifiers with OR — an "
+        "unparenthesized OR escapes --repo scope and leaks unrelated repos' issues."
     )
-    assert match is not None, (
-        "issues query is missing `repo:<repo>` inside --search; "
-        "this leaks results from unrelated repos when the search has an OR."
+    # Structural fix present: a scope-safe single `updated:>=` query.
+    assert re.search(r"gh issue list.*--search.*updated:>=", body, re.DOTALL), (
+        "issues query should use the scope-safe single `updated:>=` qualifier."
     )
 
 

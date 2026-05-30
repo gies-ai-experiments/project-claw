@@ -33,15 +33,31 @@ Adjust the `-v-1d` to `-v-7d` for the weekly window.
 
 ## Issues activity in the last 7 days
 
-**CRITICAL:** the `repo:<repo>` qualifier must appear INSIDE the search
-string. Without it, `gh` falls back to a global GitHub issue search and
-silently returns results from random unrelated repos — `--repo` alone
-is not enough when the search clause contains an `OR`.
+**CRITICAL — never combine qualifiers with `OR` in a `gh issue list
+--search` clause.** An unparenthesized `OR` escapes the `--repo` scope:
+`gh` runs a *global* GitHub issue search and silently returns issues
+from random unrelated repos. Parentheses or a `repo:<repo>` qualifier
+"fix" it on paper, but the model reliably drops them at runtime — so do
+not depend on them. Use a single `updated:>=` qualifier instead, which
+`--repo` scopes correctly on its own:
 
 ```bash
 gh issue list --repo <repo> --state all \
-  --search "repo:<repo> (created:>=$(date -u -v-7d +%Y-%m-%d) OR closed:>=$(date -u -v-7d +%Y-%m-%d))" \
-  --json number,title,url,state,createdAt,closedAt
+  --search "updated:>=$(date -u -v-7d +%Y-%m-%d)" \
+  --json number,title,url,state,createdAt,updatedAt,closedAt
+```
+
+`updated:>=` returns every issue touched in the window — opened,
+commented, labeled, closed, or reopened — exactly the "what's active?"
+set a status update wants.
+
+If you specifically need *opened* vs *closed* split out, run two
+separate single-qualifier queries (each stays repo-scoped). **Never**
+merge them with `OR`:
+
+```bash
+gh issue list --repo <repo> --state all    --search "created:>=$(date -u -v-7d +%Y-%m-%d)" --json number,title,url,state,createdAt
+gh issue list --repo <repo> --state closed --search "closed:>=$(date -u -v-7d +%Y-%m-%d)"  --json number,title,url,state,closedAt
 ```
 
 ## One specific PR
