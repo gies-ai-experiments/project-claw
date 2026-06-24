@@ -18,7 +18,7 @@ If neither `create_mindforum_room` nor `invite_to_mindforum_room` is available i
 
 - The `name` is required and user-facing. The `slug` (optional) must be lowercase letters, digits, and hyphens, 3-40 chars — if the user gives you an invalid slug, fix it or ask; do not pass it through.
 - Only the room's creator can invite (the API key owner). If `invite_to_mindforum_room` returns `not_found`, the room is not owned by this key — tell the user.
-- The API does not return a room URL, only an id. Report the room id; do not invent a URL.
+- The tools return the room link (`{host}/room/{id}`). Share that link in the chat so the user can open or forward the room. The link is the gate to join — anyone with it can enter with a name + email.
 - Rate limits are enforced server-side: ~20 rooms/day, ~200 invites/day, 50 invites per call. If a call comes back rate-limited, tell the user and suggest waiting.
 
 ## Examples

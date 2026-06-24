@@ -72,6 +72,7 @@ async def test_create_room_sends_bearer_and_camelcase_body(monkeypatch):
     assert "Created MindForum room" in result
     assert "my-room" in result
     assert "My room" in result
+    assert "https://forum.example.com/room/my-room" in result
 
     assert len(seen) == 1
     req = seen[0]
@@ -109,6 +110,26 @@ async def test_create_room_auto_generates_slug_when_omitted(monkeypatch):
     assert "id" not in body
     assert body == {"name": "Sync"}
     assert "gen-abc" in result
+    assert "https://forum.example.com/room/gen-abc" in result
+
+
+@pytest.mark.asyncio
+async def test_create_room_link_uses_configured_host(monkeypatch):
+    _install_handler(
+        monkeypatch,
+        lambda req: httpx.Response(201, json={"id": "r1", "name": "R"}),
+    )
+    tool = CreateMindForumRoomTool(config=_cfg(host="https://mindforum.disruptionlab.illinois.edu"))
+    result = await tool.execute(name="R")
+    assert "https://mindforum.disruptionlab.illinois.edu/room/r1" in result
+
+
+@pytest.mark.asyncio
+async def test_create_room_omits_link_when_id_missing(monkeypatch):
+    _install_handler(monkeypatch, lambda req: httpx.Response(201, json={"name": "R"}))
+    tool = CreateMindForumRoomTool(config=_cfg())
+    result = await tool.execute(name="R")
+    assert "Link:" not in result
 
 
 # ---------- create room: client-side guards ----------
@@ -202,6 +223,7 @@ async def test_invite_uses_bulk_body_and_camelcase_fields(monkeypatch):
     assert "Invited 2" in result
     assert "weekly-sync" in result
     assert "skipped" not in result  # skipped == 0 → omitted
+    assert "https://forum.example.com/room/weekly-sync" in result
 
     assert len(seen) == 1
     req = seen[0]

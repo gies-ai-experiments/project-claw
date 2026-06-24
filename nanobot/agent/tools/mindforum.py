@@ -160,7 +160,11 @@ class CreateMindForumRoomTool(Tool):
             return result
         room_id = result.get("id", "")
         returned_name = result.get("name", room_name)
-        return f'Created MindForum room "{returned_name}" (id: {room_id}).'
+        link = f"{self.config.host.rstrip('/')}/room/{room_id}" if room_id else ""
+        return (
+            f'Created MindForum room "{returned_name}" (id: {room_id}).'
+            + (f" Link: {link}" if link else "")
+        )
 
 
 # -------- invite to room --------
@@ -244,10 +248,11 @@ class InviteToMindForumRoomTool(Tool):
             return result
         created = result.get("created", [])
         skipped = result.get("skipped", 0)
+        link = f"{self.config.host.rstrip('/')}/room/{room_id}"
         return (
             f'Invited {len(created)} to "{room_id}"'
             + (f" (skipped: {skipped} already-invited)" if skipped else "")
-            + "."
+            + f". Room link: {link}"
         )
 
 
