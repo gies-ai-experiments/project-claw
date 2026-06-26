@@ -41,6 +41,31 @@ async def test_sync_writes_projects_and_allowed_channels(pg_schema):
 
 
 @pytest.mark.asyncio
+async def test_sync_writes_default_channels(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    cfg = SlackConfig.model_validate(
+        {
+            "projects": {
+                "mindforum": {"name": "mindforum", "github": {"repos": ["org/MindForum"]}},
+                "gies-lab": {"name": "gies-lab", "granola": {"folderId": "fol_X"}},
+            },
+            "projectChannels": {
+                "C1": {
+                    "allowedProjects": ["mindforum", "gies-lab"],
+                    "defaultProject": "gies-lab",
+                },
+            },
+        }
+    )
+    await sync_project_registry(conn, cfg)
+    rows = await conn.fetch("SELECT * FROM project_registry ORDER BY project_id")
+    by_id = {r["project_id"]: r for r in rows}
+    assert sorted(by_id["gies-lab"]["default_channels"]) == ["C1"]
+    assert sorted(by_id["mindforum"]["default_channels"]) == []
+
+
+@pytest.mark.asyncio
 async def test_sync_is_idempotent_and_updates(pg_schema):
     schema, conn = pg_schema
     await apply_migrations(conn, schema=schema)

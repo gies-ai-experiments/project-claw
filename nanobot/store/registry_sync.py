@@ -16,9 +16,12 @@ if TYPE_CHECKING:
 
 async def sync_project_registry(conn: asyncpg.Connection, slack_cfg: "SlackConfig") -> None:
     channels_for: dict[str, list[str]] = defaultdict(list)
+    default_channels_for: dict[str, list[str]] = defaultdict(list)
     for chan_id, pc in slack_cfg.project_channels.items():
         for name in pc.allowed_projects:
             channels_for[name].append(chan_id)
+        if pc.default_project:
+            default_channels_for[pc.default_project].append(chan_id)
 
     async with conn.transaction():
         for name, project in slack_cfg.projects.items():
@@ -27,15 +30,18 @@ async def sync_project_registry(conn: asyncpg.Connection, slack_cfg: "SlackConfi
             await conn.execute(
                 """
                 INSERT INTO project_registry
-                  (project_id, github_repos, granola_folder_id, allowed_channels)
-                VALUES ($1, $2, $3, $4)
+                  (project_id, github_repos, granola_folder_id, allowed_channels,
+                   default_channels)
+                VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (project_id) DO UPDATE
                   SET github_repos = EXCLUDED.github_repos,
                       granola_folder_id = EXCLUDED.granola_folder_id,
-                      allowed_channels = EXCLUDED.allowed_channels
+                      allowed_channels = EXCLUDED.allowed_channels,
+                      default_channels = EXCLUDED.default_channels
                 """,
                 name,
                 repos,
                 folder,
                 sorted(set(channels_for.get(name, []))),
+                sorted(set(default_channels_for.get(name, []))),
             )

@@ -76,6 +76,50 @@ async def test_loop_resolves_persists_and_injects_memory(pg_schema, loop_factory
 
 
 @pytest.mark.asyncio
+async def test_loop_injects_github_repos_into_project_metadata(pg_schema, loop_factory):
+    """The resolved project must carry github.repos into metadata so the renderer
+    surfaces the real owner/name slug to the model (not just the project name)."""
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    await conn.execute(
+        "INSERT INTO project_registry (project_id, github_repos, allowed_channels) "
+        "VALUES ('mindforum', ARRAY['gies-ai-experiments/MindForum'], ARRAY['C1'])"
+    )
+    loop = loop_factory(provider=_provider())
+    loop.attach_memory(MessageStore(conn), ProjectResolver(conn), inject_limit=20)
+
+    msg = _msg("hello mindforum")
+    ctx = SimpleNamespace(msg=msg, all_messages=[], save_skip=0)
+    await loop._memory_resolve_project(ctx)
+
+    project = msg.metadata["project"]
+    assert project["name"] == "mindforum"
+    assert project["github"]["repos"] == ["gies-ai-experiments/MindForum"]
+
+
+@pytest.mark.asyncio
+async def test_loop_injects_granola_folder_id_into_project_metadata(pg_schema, loop_factory):
+    """The resolved project must carry granola.folder_id into metadata so the
+    renderer surfaces it and Granola tool calls scope to the right folder."""
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    await conn.execute(
+        "INSERT INTO project_registry (project_id, granola_folder_id, allowed_channels) "
+        "VALUES ('mindforum', 'fol_PJTxBtvhzqzImI', ARRAY['C1'])"
+    )
+    loop = loop_factory(provider=_provider())
+    loop.attach_memory(MessageStore(conn), ProjectResolver(conn), inject_limit=20)
+
+    msg = _msg("any meeting notes?")
+    ctx = SimpleNamespace(msg=msg, all_messages=[], save_skip=0)
+    await loop._memory_resolve_project(ctx)
+
+    project = msg.metadata["project"]
+    assert project["name"] == "mindforum"
+    assert project["granola"]["folder_id"] == "fol_PJTxBtvhzqzImI"
+
+
+@pytest.mark.asyncio
 async def test_loop_without_memory_is_inert(pg_schema, loop_factory):
     loop = loop_factory(provider=_provider())  # no attach_memory
     assert not loop.tools.has("project_context_search")

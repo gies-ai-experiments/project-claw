@@ -676,7 +676,12 @@ class AgentLoop:
                 meta["project_id"] = res.project_id
                 existing = meta.get("project")
                 if not (isinstance(existing, dict) and existing.get("name") == res.project_id):
-                    meta["project"] = {"name": res.project_id}
+                    project: dict[str, Any] = {"name": res.project_id}
+                    if res.github_repos:
+                        project["github"] = {"repos": list(res.github_repos)}
+                    if res.granola_folder_id:
+                        project["granola"] = {"folder_id": res.granola_folder_id}
+                    meta["project"] = project
             elif res.ambiguous and res.candidates:
                 meta["project_ambiguous"] = True
                 meta["project_candidates"] = res.candidates
