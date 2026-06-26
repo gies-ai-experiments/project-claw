@@ -20,6 +20,8 @@ from nanobot.channels.slack import SLACK_MAX_MESSAGE_LEN, SlackChannel, SlackCon
 class _FakeAsyncWebClient:
     def __init__(self) -> None:
         self.chat_post_calls: list[dict[str, object | None]] = []
+        self.chat_update_calls: list[dict[str, object | None]] = []
+        self.chat_delete_calls: list[dict[str, object | None]] = []
         self.file_upload_calls: list[dict[str, object | None]] = []
         self.reactions_add_calls: list[dict[str, object | None]] = []
         self.reactions_remove_calls: list[dict[str, object | None]] = []
@@ -31,6 +33,7 @@ class _FakeAsyncWebClient:
         self._conversations_replies_response: dict[str, object] = {"messages": []}
         self._users_pages: list[dict[str, object]] = []
         self._open_dm_response: dict[str, object] = {"channel": {"id": "D_OPENED"}}
+        self._post_counter = 0
 
     async def chat_postMessage(  # noqa: N802 - mirrors Slack SDK method name
         self,
@@ -39,7 +42,7 @@ class _FakeAsyncWebClient:
         text: str,
         thread_ts: str | None = None,
         blocks: list[dict[str, object]] | None = None,
-    ) -> None:
+    ) -> dict[str, object]:
         call: dict[str, object | None] = {
             "channel": channel,
             "text": text,
@@ -48,6 +51,31 @@ class _FakeAsyncWebClient:
         if blocks is not None:
             call["blocks"] = blocks
         self.chat_post_calls.append(call)
+        self._post_counter += 1
+        return {"ts": f"ts.{self._post_counter:04d}"}
+
+    async def chat_update(  # noqa: N802 - mirrors Slack SDK method name
+        self,
+        *,
+        channel: str,
+        ts: str,
+        text: str,
+        blocks: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        call: dict[str, object | None] = {"channel": channel, "ts": ts, "text": text}
+        if blocks is not None:
+            call["blocks"] = blocks
+        self.chat_update_calls.append(call)
+        return {"ts": ts}
+
+    async def chat_delete(  # noqa: N802 - mirrors Slack SDK method name
+        self,
+        *,
+        channel: str,
+        ts: str,
+    ) -> dict[str, object]:
+        self.chat_delete_calls.append({"channel": channel, "ts": ts})
+        return {"ok": True}
 
     async def files_upload_v2(
         self,
@@ -802,3 +830,127 @@ async def test_inbound_from_unmapped_channel_with_default_uses_default() -> None
     project = kwargs["metadata"].get("project")
     assert project is not None
     assert project["name"] == "foo"
+
+
+# --- "thinking…" placeholder so the user sees the claw is working ---
+
+
+def _thinking_channel(**overrides) -> tuple[SlackChannel, _FakeAsyncWebClient]:
+    """A channel wired to a fake web client, with _handle_message stubbed."""
+    channel = SlackChannel(SlackConfig(enabled=True, **overrides), MessageBus())
+    channel._bot_user_id = "UBOT"
+    fake = _FakeAsyncWebClient()
+    channel._web_client = fake
+    channel._with_thread_context = AsyncMock(return_value="body")  # type: ignore[method-assign]
+    return channel, fake
+
+
+@pytest.mark.asyncio
+async def test_inbound_posts_thinking_placeholder() -> None:
+    """An inbound message posts a 'thinking…' placeholder and registers its ts."""
+    channel, fake = _thinking_channel()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    await channel._on_socket_request(client, _channel_mention_req("<@UBOT> hi"))
+
+    placeholders = [c for c in fake.chat_post_calls if c["text"] == channel.config.thinking_text]
+    assert len(placeholders) == 1
+    assert placeholders[0]["channel"] == "C123"
+    # default channel reply lands in-channel, so the placeholder is not threaded
+    assert placeholders[0]["thread_ts"] is None
+    # registered under "{chat_id}:{event_ts}" with the ts the post returned
+    assert channel._thinking["C123:111.000"] == "ts.0001"
+
+
+@pytest.mark.asyncio
+async def test_send_replaces_thinking_placeholder_in_place() -> None:
+    """The reply updates the placeholder in place rather than posting a new message."""
+    channel, fake = _thinking_channel()
+    channel._thinking["C123:1700000000.000100"] = "ph.1"
+
+    await channel.send(
+        OutboundMessage(
+            channel="slack",
+            chat_id="C123",
+            content="the answer",
+            metadata={
+                "slack": {"event": {"ts": "1700000000.000100"}, "channel_type": "channel"},
+            },
+        )
+    )
+
+    assert fake.chat_update_calls == [{"channel": "C123", "ts": "ph.1", "text": "the answer"}]
+    assert fake.chat_post_calls == []
+    assert "C123:1700000000.000100" not in channel._thinking
+
+
+@pytest.mark.asyncio
+async def test_send_without_placeholder_posts_normally() -> None:
+    """With no registered placeholder, send() posts a fresh message as before."""
+    channel, fake = _thinking_channel()
+
+    await channel.send(
+        OutboundMessage(
+            channel="slack",
+            chat_id="C123",
+            content="hi",
+            metadata={
+                "slack": {"event": {"ts": "1700000000.000100"}, "channel_type": "channel"},
+            },
+        )
+    )
+
+    assert fake.chat_update_calls == []
+    assert [c["text"] for c in fake.chat_post_calls] == ["hi"]
+
+
+@pytest.mark.asyncio
+async def test_send_deletes_placeholder_when_reply_has_buttons() -> None:
+    """A reply carrying buttons can't update in place, so the placeholder is deleted."""
+    channel, fake = _thinking_channel()
+    channel._thinking["C123:1700000000.000100"] = "ph.1"
+
+    await channel.send(
+        OutboundMessage(
+            channel="slack",
+            chat_id="C123",
+            content="pick one",
+            buttons=[["Yes", "yes"]],
+            metadata={
+                "slack": {"event": {"ts": "1700000000.000100"}, "channel_type": "channel"},
+            },
+        )
+    )
+
+    assert fake.chat_delete_calls == [{"channel": "C123", "ts": "ph.1"}]
+    assert fake.chat_update_calls == []
+    assert len(fake.chat_post_calls) == 1
+    assert "blocks" in fake.chat_post_calls[0]
+    assert "C123:1700000000.000100" not in channel._thinking
+
+
+@pytest.mark.asyncio
+async def test_thinking_placeholder_deleted_when_handle_raises() -> None:
+    """If the turn never starts, the dangling placeholder is cleaned up."""
+    channel, fake = _thinking_channel()
+    channel._handle_message = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    await channel._on_socket_request(client, _channel_mention_req("<@UBOT> hi"))
+
+    assert "C123:111.000" not in channel._thinking
+    assert fake.chat_delete_calls == [{"channel": "C123", "ts": "ts.0001"}]
+
+
+@pytest.mark.asyncio
+async def test_thinking_message_can_be_disabled() -> None:
+    """thinking_message=False suppresses the placeholder entirely."""
+    channel, fake = _thinking_channel(thinking_message=False)
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+
+    await channel._on_socket_request(client, _channel_mention_req("<@UBOT> hi"))
+
+    assert all(c["text"] != channel.config.thinking_text for c in fake.chat_post_calls)
+    assert channel._thinking == {}

@@ -58,6 +58,10 @@ class SlackConfig(Base):
     reply_in_thread: bool = True
     react_emoji: str = "eyes"
     done_emoji: str = "white_check_mark"
+    # Post a transient "thinking…" message while the agent works, so the user
+    # knows a reply is coming; it is replaced in place by the answer.
+    thinking_message: bool = True
+    thinking_text: str = "🐾 the claw is thinking…"
     include_thread_context: bool = True
     thread_context_limit: int = 20
     allow_from: list[str] = Field(default_factory=list)
@@ -149,6 +153,9 @@ class SlackChannel(BaseChannel):
         self._bot_user_id: str | None = None
         self._target_cache: dict[str, str] = {}
         self._thread_context_attempted: set[str] = set()
+        # "{chat_id}:{event_ts}" -> ts of the "thinking…" placeholder message,
+        # awaiting replacement (or cleanup) when the reply lands.
+        self._thinking: dict[str, str] = {}
 
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
@@ -229,18 +236,43 @@ class SlackChannel(BaseChannel):
             thread_ts_param = thread_ts if thread_ts and target_chat_id == origin_chat_id else None
 
             is_progress = (msg.metadata or {}).get("_progress", False)
+            event = slack_meta.get("event", {}) or {}
+            origin_ts = event.get("ts")
+            # The "thinking…" placeholder lives in the origin conversation, so only
+            # a same-conversation reply can claim it.
+            placeholder_key = (
+                self._thinking_key(origin_chat_id, origin_ts)
+                if origin_ts and target_chat_id == origin_chat_id
+                else None
+            )
+
             if is_progress and not msg.content:
                 pass  # skip empty progress messages (e.g. tool-event-only updates)
             elif msg.content or not (msg.media or []):
                 mrkdwn = self._to_mrkdwn(msg.content) if msg.content else " "
                 buttons = getattr(msg, "buttons", None) or []
                 chunks = split_message(mrkdwn, SLACK_MAX_MESSAGE_LEN)
+                placeholder_ts = (
+                    self._thinking.pop(placeholder_key, None) if placeholder_key else None
+                )
                 for index, chunk in enumerate(chunks):
                     kwargs: dict[str, Any] = dict(
                         channel=target_chat_id, text=chunk, thread_ts=thread_ts_param,
                     )
                     if buttons and index == len(chunks) - 1:
                         kwargs["blocks"] = self._build_button_blocks(chunk, buttons)
+                    # Replace the "thinking…" placeholder in place with the first
+                    # chunk. Buttons (blocks) can't be swapped cleanly, so fall back
+                    # to deleting the placeholder and posting a fresh message.
+                    if index == 0 and placeholder_ts and "blocks" not in kwargs:
+                        await self._web_client.chat_update(
+                            channel=target_chat_id, ts=placeholder_ts, text=chunk,
+                        )
+                        placeholder_ts = None
+                        continue
+                    if index == 0 and placeholder_ts:
+                        await self._delete_thinking_message(target_chat_id, placeholder_ts)
+                        placeholder_ts = None
                     await self._web_client.chat_postMessage(**kwargs)
 
             for media_path in msg.media or []:
@@ -254,9 +286,14 @@ class SlackChannel(BaseChannel):
                     self.logger.exception("Failed to upload file {}", media_path)
 
             # Update reaction emoji when the final (non-progress) response is sent
-            if not (msg.metadata or {}).get("_progress"):
-                event = slack_meta.get("event", {})
+            if not is_progress:
                 await self._update_react_emoji(origin_chat_id, event.get("ts"))
+                # A final reply that never claimed the placeholder (e.g. media-only)
+                # leaves it dangling — drop it so "thinking…" doesn't linger.
+                if placeholder_key:
+                    leftover = self._thinking.pop(placeholder_key, None)
+                    if leftover:
+                        await self._delete_thinking_message(origin_chat_id, leftover)
 
         except Exception:
             self.logger.exception("Error sending message")
@@ -519,6 +556,10 @@ class SlackChannel(BaseChannel):
         if not content and not media_paths:
             return
 
+        # Show a "thinking…" placeholder so the user knows a reply is coming.
+        # It posts where the reply will land and is replaced in place by send().
+        await self._post_thinking_placeholder(chat_id, event_ts, reply_thread_ts)
+
         try:
             await self._handle_message(
                 sender_id=sender_id,
@@ -538,6 +579,8 @@ class SlackChannel(BaseChannel):
             )
         except Exception:
             self.logger.exception("Error handling message from {}", sender_id)
+            # The turn never started; drop the dangling "thinking…" placeholder.
+            await self._clear_thinking_placeholder(chat_id, event_ts)
 
     async def _download_slack_file(self, file_info: dict[str, Any]) -> tuple[str | None, str]:
         """Download a Slack private file to the local media directory."""
@@ -705,6 +748,49 @@ class SlackChannel(BaseChannel):
         if elements:
             blocks.append({"type": "actions", "elements": elements[:25]})
         return blocks
+
+    @staticmethod
+    def _thinking_key(chat_id: str, event_ts: str) -> str:
+        """Registry key correlating an inbound message to its placeholder."""
+        return f"{chat_id}:{event_ts}"
+
+    async def _post_thinking_placeholder(
+        self, chat_id: str, event_ts: str | None, thread_ts: str | None
+    ) -> None:
+        """Post a transient "thinking…" message and remember it for replacement.
+
+        Best-effort: a failure here must never break handling the turn.
+        """
+        if not self.config.thinking_message or not self._web_client or not event_ts:
+            return
+        try:
+            resp = await self._web_client.chat_postMessage(
+                channel=chat_id,
+                text=self.config.thinking_text,
+                thread_ts=thread_ts,
+            )
+            ts = resp.get("ts") if isinstance(resp, dict) else None
+            if ts:
+                self._thinking[self._thinking_key(chat_id, event_ts)] = ts
+        except Exception as e:
+            self.logger.debug("thinking placeholder post failed: {}", e)
+
+    async def _clear_thinking_placeholder(self, chat_id: str, event_ts: str | None) -> None:
+        """Drop a pending placeholder when the reply will never arrive."""
+        if not event_ts:
+            return
+        ts = self._thinking.pop(self._thinking_key(chat_id, event_ts), None)
+        if ts:
+            await self._delete_thinking_message(chat_id, ts)
+
+    async def _delete_thinking_message(self, chat_id: str, ts: str) -> None:
+        """Best-effort deletion of a placeholder message."""
+        if not self._web_client:
+            return
+        try:
+            await self._web_client.chat_delete(channel=chat_id, ts=ts)
+        except Exception as e:
+            self.logger.debug("thinking placeholder delete failed: {}", e)
 
     async def _update_react_emoji(self, chat_id: str, ts: str | None) -> None:
         """Remove the in-progress reaction and optionally add a done reaction."""
