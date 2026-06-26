@@ -325,6 +325,8 @@ class AgentLoop:
         self._message_store = message_store
         self._project_resolver = project_resolver
         self._memory_inject_limit = memory_inject_limit
+        # L2 distiller — None until attached at boot behind cfg.memory.distiller_active.
+        self.distiller: Any = None
         self._register_default_tools()
         self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
@@ -517,6 +519,14 @@ class AgentLoop:
             from nanobot.agent.tools.project_context import ProjectContextSearchTool
 
             self.tools.register(ProjectContextSearchTool(pool=message_store.conn))
+
+    def attach_distiller(self, distiller: Any) -> None:
+        """Wire the L2 distiller into a live loop (called at boot).
+
+        Idempotent. The distiller is invoked from the ``distill`` system cron
+        job — see ``cli/commands.py`` — never on the hot turn path.
+        """
+        self.distiller = distiller
 
     async def _connect_mcp(self) -> None:
         """Connect configured MCP servers."""

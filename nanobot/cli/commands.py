@@ -734,10 +734,59 @@ async def _setup_agent_memory(agent: AgentLoop, config: Config):
             MessageStore(pool), ProjectResolver(pool), config.memory.inject_limit
         )
         logger.info("project-context-db memory active (dsn configured)")
+
+        if config.memory.distiller_active:
+            _attach_distiller(agent, pool, config)
+
         return pool
     except Exception as exc:  # noqa: BLE001 - never block gateway startup
         logger.warning("memory setup failed; continuing without memory: {}", exc)
         return None
+
+
+def _attach_distiller(agent: AgentLoop, pool: Any, config: Config) -> None:
+    """Build the L2 Distiller and attach it to the agent loop.
+
+    The distiller uses ``config.memory.distiller_model`` for fact extraction and
+    the OpenAI provider's client for embeddings (which the hybrid search path
+    needs). Any failure is logged and swallowed — the gateway still starts; the
+    distiller cron job simply no-ops (its handler checks ``agent.distiller``).
+    """
+    try:
+        from nanobot.providers.factory import make_provider
+        from nanobot.store.distiller import Distiller
+        from nanobot.store.embeddings import OpenAIEmbedder
+
+        model = config.memory.distiller_model
+        provider = make_provider(config, model=model)
+
+        embedder: OpenAIEmbedder | None = None
+        openai_cfg = getattr(config.providers, "openai", None)
+        if openai_cfg and getattr(openai_cfg, "api_key", None):
+            try:
+                from openai import AsyncOpenAI
+
+                client = AsyncOpenAI(
+                    api_key=openai_cfg.api_key,
+                    base_url=openai_cfg.api_base or None,
+                )
+                embedder = OpenAIEmbedder(client)
+            except Exception:
+                logger.warning("distiller: embedder init failed; facts will land without vectors")
+
+        agent.attach_distiller(
+            Distiller(
+                conn=pool,
+                provider=provider,
+                model=model,
+                embedder=embedder,
+                batch_messages=config.memory.distiller_batch_messages,
+                max_threads_per_run=config.memory.distiller_max_threads_per_run,
+            )
+        )
+        logger.info("distiller active (model={}, cron='{}')", model, config.memory.distiller_cron)
+    except Exception:
+        logger.exception("distiller setup failed; continuing without L2 distillation")
 
 
 def _run_gateway(
@@ -853,6 +902,18 @@ def _run_gateway(
                 logger.info("Dream cron job completed")
             except Exception:
                 logger.exception("Dream cron job failed")
+            return None
+
+        # Distiller is an internal job — runs the L2 distiller once, no agent turn.
+        if job.name == "distill":
+            if getattr(agent, "distiller", None) is None:
+                logger.debug("Distiller cron ticked but distiller is not attached; skipping")
+                return None
+            try:
+                stats = await agent.distiller.run_once()
+                logger.info("Distiller cron job completed: {}", stats)
+            except Exception:
+                logger.exception("Distiller cron job failed")
             return None
 
         from nanobot.utils.evaluator import evaluate_response
@@ -1104,6 +1165,16 @@ def _run_gateway(
         memory_pool = None
         try:
             memory_pool = await _setup_agent_memory(agent, config)
+            if getattr(agent, "distiller", None) is not None:
+                cron.register_system_job(CronJob(
+                    id="distill",
+                    name="distill",
+                    schedule=config.memory.distiller_schedule(config.agents.defaults.timezone),
+                    payload=CronPayload(kind="system_event"),
+                ))
+                console.print(
+                    f"[green]✓[/green] Distiller: {config.memory.describe_distiller_schedule()}"
+                )
             await cron.start()
             await heartbeat.start()
             tasks = [

@@ -365,9 +365,28 @@ class MemoryConfig(Base):
     dsn: str | None = None
     inject_limit: int = 20  # max L1 messages auto-injected per turn
 
+    # L2 distiller — nightly run that distills L1 messages into project_facts.
+    # Inert unless `distiller_enabled` is True AND memory is active.
+    distiller_enabled: bool = True
+    distiller_model: str = "openai/gpt-5.5"  # LLM used for fact extraction
+    distiller_cron: str = "0 3 * * *"  # daily at 03:00 local tz by default
+    distiller_batch_messages: int = Field(default=50, ge=1)
+    distiller_max_threads_per_run: int = Field(default=20, ge=1)
+
     @property
     def active(self) -> bool:
         return self.enabled and bool(self.dsn)
+
+    @property
+    def distiller_active(self) -> bool:
+        return self.active and self.distiller_enabled
+
+    def distiller_schedule(self, timezone: str) -> CronSchedule:
+        """Build the cron schedule for the distiller tick."""
+        return CronSchedule(kind="cron", expr=self.distiller_cron, tz=timezone)
+
+    def describe_distiller_schedule(self) -> str:
+        return f"cron {self.distiller_cron}"
 
 
 class Config(BaseSettings):
