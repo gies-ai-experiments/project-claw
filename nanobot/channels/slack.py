@@ -217,7 +217,10 @@ class SlackChannel(BaseChannel):
         try:
             target_chat_id = await self._resolve_target_chat_id(msg.chat_id)
             slack_meta = msg.metadata.get("slack", {}) if msg.metadata else {}
-            thread_ts = slack_meta.get("thread_ts")
+            # Prefer the explicit reply target (channel vs thread) decided at
+            # ingest; fall back to thread_ts for senders that don't set it
+            # (cron, heartbeat, proactive message tool).
+            thread_ts = slack_meta.get("reply_thread_ts", slack_meta.get("thread_ts"))
             origin_chat_id = str((slack_meta.get("event", {}) or {}).get("channel") or msg.chat_id)
             # Reply in the same thread the inbound message belongs to (works
             # for both real channel threads and DM threads). When the agent
@@ -268,6 +271,11 @@ class SlackChannel(BaseChannel):
                 None,
             )
         return project.model_dump() if project is not None else None
+
+    @staticmethod
+    def _is_brainstorm(text: str) -> bool:
+        """True when a message opts into a threaded reply via the /brainstorm trigger."""
+        return "/brainstorm" in (text or "").lower()
 
     async def _resolve_target_chat_id(self, target: str) -> str:
         """Resolve human-friendly Slack targets to concrete IDs when needed."""
@@ -464,6 +472,11 @@ class SlackChannel(BaseChannel):
             and channel_type != "im"
         ):
             thread_ts = event_ts
+        # Replies land in the channel by default; thread only when the user opts
+        # in with /brainstorm, or is already inside an existing thread. The
+        # memory/session key keeps using thread_ts above, so project resolution
+        # and conversation memory are unaffected by where the reply is posted.
+        reply_thread_ts = thread_ts if (raw_thread_ts or self._is_brainstorm(text)) else None
         # Add :eyes: reaction to the triggering message (best-effort)
         try:
             if self._web_client and event.get("ts"):
@@ -516,6 +529,7 @@ class SlackChannel(BaseChannel):
                     "slack": {
                         "event": event,
                         "thread_ts": thread_ts,
+                        "reply_thread_ts": reply_thread_ts,
                         "channel_type": channel_type,
                     },
                     "project": self._resolve_inbound_project(chat_id),

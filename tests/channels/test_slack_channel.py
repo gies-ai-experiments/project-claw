@@ -555,6 +555,85 @@ async def test_dm_thread_message_keeps_thread_ts_and_threaded_session() -> None:
     assert kwargs["metadata"]["slack"]["thread_ts"] == "1700000000.000100"
 
 
+def _channel_mention_req(text: str, ts: str = "111.000", thread_ts: str | None = None):
+    event: dict[str, object] = {
+        "type": "app_mention",
+        "user": "U1",
+        "channel": "C123",
+        "channel_type": "channel",
+        "text": text,
+        "ts": ts,
+    }
+    if thread_ts is not None:
+        event["thread_ts"] = thread_ts
+    return SimpleNamespace(type="events_api", envelope_id="env-x", payload={"event": event})
+
+
+async def _capture_inbound(req) -> dict:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    channel._bot_user_id = "UBOT"
+    channel._web_client = _FakeAsyncWebClient()
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    channel._with_thread_context = AsyncMock(return_value="body")  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+    await channel._on_socket_request(client, req)
+    channel._handle_message.assert_awaited_once()
+    return channel._handle_message.await_args.kwargs["metadata"]["slack"]
+
+
+@pytest.mark.asyncio
+async def test_channel_reply_goes_to_channel_by_default() -> None:
+    """A plain @mention replies in the channel (reply_thread_ts=None), while the
+    memory thread_ts is still set so project/memory keying is unaffected."""
+    sl = await _capture_inbound(_channel_mention_req("<@UBOT> what's up"))
+    assert sl["thread_ts"] == "111.000"      # memory key preserved
+    assert sl["reply_thread_ts"] is None      # reply lands in the channel
+
+
+@pytest.mark.asyncio
+async def test_channel_reply_threads_when_brainstorm_present() -> None:
+    """A /brainstorm mention opts into a threaded reply."""
+    sl = await _capture_inbound(_channel_mention_req("<@UBOT> /brainstorm name ideas"))
+    assert sl["reply_thread_ts"] == "111.000"
+
+
+@pytest.mark.asyncio
+async def test_brainstorm_trigger_is_case_insensitive() -> None:
+    sl = await _capture_inbound(_channel_mention_req("<@UBOT> /BrainStorm please"))
+    assert sl["reply_thread_ts"] == "111.000"
+
+
+@pytest.mark.asyncio
+async def test_existing_thread_message_keeps_threaded_reply() -> None:
+    """A message already inside a thread keeps replying in that thread."""
+    sl = await _capture_inbound(
+        _channel_mention_req("<@UBOT> follow up", ts="222.000", thread_ts="100.000")
+    )
+    assert sl["reply_thread_ts"] == "100.000"
+
+
+@pytest.mark.asyncio
+async def test_send_replies_in_channel_when_reply_thread_ts_none() -> None:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    fake_web = _FakeAsyncWebClient()
+    channel._web_client = fake_web
+    await channel.send(
+        OutboundMessage(
+            channel="slack",
+            chat_id="C123",
+            content="hi",
+            metadata={
+                "slack": {
+                    "thread_ts": "111.000",
+                    "reply_thread_ts": None,
+                    "channel_type": "channel",
+                }
+            },
+        )
+    )
+    assert fake_web.chat_post_calls[0]["thread_ts"] is None
+
+
 @pytest.mark.asyncio
 async def test_slack_slash_command_skips_thread_context() -> None:
     channel = SlackChannel(SlackConfig(enabled=True, allow_from=[]), MessageBus())
