@@ -769,7 +769,9 @@ class SlackChannel(BaseChannel):
                 text=self.config.thinking_text,
                 thread_ts=thread_ts,
             )
-            ts = resp.get("ts") if isinstance(resp, dict) else None
+            # chat_postMessage returns a SlackResponse (dict-like, not a dict),
+            # so read "ts" via .get() rather than an isinstance(dict) check.
+            ts = resp.get("ts") if resp is not None else None
             if ts:
                 self._thinking[self._thinking_key(chat_id, event_ts)] = ts
         except Exception as e:

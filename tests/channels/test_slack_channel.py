@@ -17,6 +17,24 @@ from nanobot.bus.queue import MessageBus
 from nanobot.channels.slack import SLACK_MAX_MESSAGE_LEN, SlackChannel, SlackConfig
 
 
+class _FakeSlackResponse:
+    """Mimics slack_sdk's SlackResponse: dict-like, but NOT a dict subclass.
+
+    The real AsyncWebClient returns SlackResponse, not a plain dict, so any code
+    that type-checks the response with ``isinstance(resp, dict)`` would silently
+    fail in production while passing against a dict fake.
+    """
+
+    def __init__(self, data: dict[str, object]) -> None:
+        self._data = data
+
+    def get(self, key: str, default: object | None = None) -> object | None:
+        return self._data.get(key, default)
+
+    def __getitem__(self, key: str) -> object:
+        return self._data[key]
+
+
 class _FakeAsyncWebClient:
     def __init__(self) -> None:
         self.chat_post_calls: list[dict[str, object | None]] = []
@@ -42,7 +60,7 @@ class _FakeAsyncWebClient:
         text: str,
         thread_ts: str | None = None,
         blocks: list[dict[str, object]] | None = None,
-    ) -> dict[str, object]:
+    ) -> _FakeSlackResponse:
         call: dict[str, object | None] = {
             "channel": channel,
             "text": text,
@@ -52,7 +70,8 @@ class _FakeAsyncWebClient:
             call["blocks"] = blocks
         self.chat_post_calls.append(call)
         self._post_counter += 1
-        return {"ts": f"ts.{self._post_counter:04d}"}
+        # Return a SlackResponse-like object (not a dict), as the real SDK does.
+        return _FakeSlackResponse({"ts": f"ts.{self._post_counter:04d}"})
 
     async def chat_update(  # noqa: N802 - mirrors Slack SDK method name
         self,
