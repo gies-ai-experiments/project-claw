@@ -107,3 +107,9 @@ exp/
 
 # Agent harness state (never tracked)
 .claude/
+
+# Illinois Azure / Disruption Lab skills — internal infra details, keep out of this public repo
+/azure/
+
+# Azure deployment config — internal endpoints/IDs, keep out of this public repo
+/deploy/
