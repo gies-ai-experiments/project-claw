@@ -1,0 +1,81 @@
+name: Deploy to Azure Container Apps
+
+# Builds the gateway image (with the baked deploy config) and rolls the live
+# Project Claw container app. Auth is OIDC — no Azure password is stored.
+#
+# Required GitHub config (already provisioned via gh):
+#   secrets:  AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#             AZURE_DEPLOY_CONFIG_JSON   (the gitignored deploy/azure/config.json)
+#   vars:     AZURE_ACR_NAME, AZURE_IMAGE_REPO, AZURE_RESOURCE_GROUP, AZURE_CONTAINER_APP
+#
+# One-time access grants the federated identity needs (run by an Owner /
+# User Access Administrator — see deploy/azure/README or the PR notes):
+#   az role assignment create --assignee <AZURE_CLIENT_ID> --role AcrPush       --scope <ACR resource id>
+#   az role assignment create --assignee <AZURE_CLIENT_ID> --role Contributor   --scope <container app resource id>
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'nanobot/**'
+      - 'bridge/**'
+      - 'webui/**'
+      - 'pyproject.toml'
+      - 'entrypoint.sh'
+      - 'deploy/azure/Dockerfile'
+      - '.github/workflows/deploy-azure.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # required for OIDC federated login
+  contents: read
+
+concurrency:
+  group: deploy-azure-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP }}
+      IMAGE: ${{ vars.AZURE_ACR_NAME }}.azurecr.io/${{ vars.AZURE_IMAGE_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Materialize gitignored deploy config from secret
+        env:
+          CONFIG_JSON: ${{ secrets.AZURE_DEPLOY_CONFIG_JSON }}
+        run: |
+          mkdir -p deploy/azure
+          printf '%s' "$CONFIG_JSON" > deploy/azure/config.json
+          # sanity: must be valid JSON, must carry the project mapping
+          python3 -c "import json,sys; d=json.load(open('deploy/azure/config.json')); assert d['channels']['slack']['projectChannels'], 'no projectChannels'"
+
+      - name: Build and push image (tagged with commit SHA)
+        run: |
+          az acr login -n "$ACR_NAME"
+          docker build -f deploy/azure/Dockerfile \
+            -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Container Apps
+        run: |
+          az containerapp update -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+            --image "$IMAGE:${{ github.sha }}"
+
+      - name: Verify active revision
+        run: |
+          az containerapp revision list -g "$RESOURCE_GROUP" -n "$CONTAINER_APP" \
+            --query "[?properties.active].{rev:name, running:properties.runningState, health:properties.healthState, image:properties.template.containers[0].image}" \
+            -o table
