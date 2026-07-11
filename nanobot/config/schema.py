@@ -30,11 +30,16 @@ class GitHubProjectConfig(Base):
     """GitHub portion of a projectclaw Project."""
 
     repos: list[str] = Field(default_factory=list)
+    # When set, the project allows ANY repo in this org and a bare repo name
+    # (no "owner/") resolves to "<org>/<name>". Either `repos` or `org` must be set.
+    org: str | None = None
 
     @model_validator(mode="after")
-    def _require_at_least_one_repo(self) -> "GitHubProjectConfig":
-        if not self.repos:
-            raise ValueError("github.repos must contain at least one 'owner/name' entry")
+    def _require_repos_or_org(self) -> "GitHubProjectConfig":
+        if not self.repos and not self.org:
+            raise ValueError(
+                "github must set at least one of 'repos' (owner/name entries) or 'org'"
+            )
         return self
 
 
@@ -55,12 +60,31 @@ class GranolaProjectConfig(Base):
         return self
 
 
+class PersonConfig(Base):
+    """A meeting attendee's identity, for @mentions and issue assignment."""
+
+    email: str
+    name: str = ""
+    slack_id: str = ""
+    github_username: str = ""
+
+
+class MeetingSummaryProjectConfig(Base):
+    """Per-project auto meeting-summary settings (opt-in)."""
+
+    enabled: bool = False
+    summary_channel: str = ""  # Slack channel ID the summary is posted into
+    issue_repo: str = ""  # owner/name for GitHub issues; needed when github.repos has >1
+
+
 class Project(Base):
     """A projectclaw project: a name plus at least one data source."""
 
     name: str
     github: GitHubProjectConfig | None = None
     granola: GranolaProjectConfig | None = None
+    meeting_summary: MeetingSummaryProjectConfig | None = None
+    people: list[PersonConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_at_least_one_source(self) -> "Project":
@@ -298,12 +322,20 @@ class ApiConfig(Base):
     timeout: float = 120.0  # Per-request timeout in seconds.
 
 
+class MeetingSummaryConfig(Base):
+    """Global auto meeting-summary poller settings."""
+
+    enabled: bool = False
+    interval_s: int = 900  # 15 minutes
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
     host: str = "127.0.0.1"  # Safer default: local-only bind.
     port: int = 18790
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    meeting_summary: MeetingSummaryConfig = Field(default_factory=MeetingSummaryConfig)
 
 
 class MCPServerConfig(Base):

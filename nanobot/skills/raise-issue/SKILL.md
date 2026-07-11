@@ -20,9 +20,12 @@ Read `metadata.project` (same contract the `projectclaw` skill uses):
 
 - `null` → **Do not create anything.** Reply asking the user to run this in a
   project-mapped channel or to name the project explicitly.
-- An object `{ "name", "github": {"repos":[...]}|null, ... }` → use ONLY the
-  repos listed in `github.repos`. If `github` is `null`, tell the user this
-  project has no GitHub repos configured and stop.
+- An object `{ "name", "github": {"repos":[...], "org": "<org>"?}|null, ... }`:
+  - If `github.org` is set, the project allows **any repo in that org**. A bare
+    repo name from the user (no `owner/`) resolves to `<org>/<name>`.
+  - Else use **only** the `owner/name` repos listed in `github.repos`.
+  - If `github` is `null` (and no `org`), tell the user this project has no GitHub
+    repos configured and stop.
 
 ## Step 2 — Assemble the brainstorm
 
@@ -65,9 +68,11 @@ substantive to put in them — don't pad with empty sections.
 
 ## Step 4 — Resolve the target repo
 
-- Exactly one entry in `project.github.repos` → use it.
-- More than one → **ask the user which repo** before creating.
-- Never use a repo that is not in `project.github.repos`.
+- If `project.github.org` is set: use the repo the user named as `<org>/<name>`
+  (accept a bare name and prefix the org). Any repo in the org is allowed; if the
+  user named none, ask which repo.
+- Else, with `project.github.repos`: exactly one entry → use it; more than one →
+  **ask the user which repo**; never use a repo not in the list.
 
 ## Step 5 — Confirm before creating
 

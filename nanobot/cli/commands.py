@@ -1069,6 +1069,65 @@ def _run_gateway(
         timezone=config.agents.defaults.timezone,
     )
 
+    # Auto meeting-summary poller: watch Granola for new notes → summarize + assign.
+    ms_cfg = config.gateway.meeting_summary
+    meeting_summary = None
+    if ms_cfg.enabled:
+        import json as _json
+
+        from nanobot.channels.slack import SlackConfig
+        from nanobot.meeting_summary import MeetingSummaryService
+
+        slack_raw = getattr(config.channels, "slack", None)
+        slack_cfg = (
+            slack_raw if isinstance(slack_raw, SlackConfig)
+            else SlackConfig.model_validate(slack_raw) if slack_raw else None
+        )
+        ms_projects = list(slack_cfg.projects.values()) if slack_cfg else []
+
+        async def on_new_meeting(project, note):
+            ms = project.meeting_summary
+            repo = ms.issue_repo or (
+                project.github.repos[0]
+                if project.github and len(project.github.repos) == 1 else ""
+            )
+            roster = _json.dumps([p.model_dump(by_alias=True) for p in project.people])
+            trigger = (
+                f"A new Granola meeting note landed for project '{project.name}'. "
+                f"Run the meeting-summary skill.\n"
+                f"note_id: {note.get('id')}\n"
+                f"folder_id: {project.granola.folder_id}\n"
+                f"issue_repo: {repo}\n"
+                f"roster: {roster}"
+            )
+
+            async def _silent(*_a, **_k):
+                pass
+
+            resp = await agent.process_direct(
+                trigger,
+                session_key=f"meeting-summary:{project.name}",
+                channel="slack",
+                chat_id=ms.summary_channel,
+                on_progress=_silent,
+            )
+            if resp and resp.content.strip():
+                await _deliver_to_channel(
+                    OutboundMessage(
+                        channel="slack", chat_id=ms.summary_channel, content=resp.content,
+                    ),
+                    record=True,
+                )
+
+        meeting_summary = MeetingSummaryService(
+            config.tools.granola,
+            ms_projects,
+            on_new_meeting,
+            state_path=config.workspace_path / "meeting_summary_state.json",
+            interval_s=ms_cfg.interval_s,
+        )
+        console.print(f"[green]✓[/green] Meeting-summary: every {ms_cfg.interval_s}s")
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -1177,6 +1236,8 @@ def _run_gateway(
                 )
             await cron.start()
             await heartbeat.start()
+            if meeting_summary:
+                await meeting_summary.start()
             tasks = [
                 agent.run(),
                 channels.start_all(),
@@ -1195,6 +1256,8 @@ def _run_gateway(
         finally:
             await agent.close_mcp()
             heartbeat.stop()
+            if meeting_summary:
+                meeting_summary.stop()
             cron.stop()
             agent.stop()
             await channels.stop_all()

@@ -6,8 +6,11 @@ metadata: {"nanobot":{"emoji":"🐙","always":true,"requires":{"bins":["gh"]},"i
 
 # GitHub Skill
 
-Use the `gh` CLI through the `exec` tool. Always pass `--repo` from
-`metadata.project.github.repos[]`. Never query a repo not in that list.
+Use the `gh` CLI through the `exec` tool, with `--repo` scoped to the project:
+- If `metadata.project.github.org` is set, `--repo` may be **any** `<org>/<name>`
+  in that org; a bare repo name from the user resolves to `<org>/<name>`.
+- Otherwise pass `--repo` only from `metadata.project.github.repos[]` and never
+  query a repo outside that list.
 If `metadata.project` is null, refuse to call gh — ask the user which
 project to use instead.
 

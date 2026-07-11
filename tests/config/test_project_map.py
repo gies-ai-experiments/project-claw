@@ -52,6 +52,12 @@ def test_github_project_requires_at_least_one_repo():
         GitHubProjectConfig.model_validate({"repos": []})
 
 
+def test_github_project_accepts_org_without_repos():
+    gh = GitHubProjectConfig.model_validate({"org": "gies-ai-experiments"})
+    assert gh.org == "gies-ai-experiments"
+    assert gh.repos == []
+
+
 def test_granola_project_requires_nonempty_folder_id():
     with pytest.raises(ValidationError):
         GranolaProjectConfig.model_validate({"tag": ""})
@@ -112,3 +118,53 @@ def test_slack_config_without_project_map_works():
     cfg = SlackConfig.model_validate({})
     assert cfg.project_map == {}
     assert cfg.default_project is None
+
+
+# --- config-path resolution: _resolve_inbound_project over projects/project_channels ---
+
+from nanobot.bus.queue import MessageBus  # noqa: E402
+from nanobot.channels.slack import SlackChannel  # noqa: E402
+
+_ORG_CFG = {
+    "projects": {
+        "mindforum": {
+            "name": "mindforum",
+            "github": {"repos": ["gies-ai-experiments/MindForum"]},
+        },
+        "lab": {
+            "name": "lab",
+            "github": {"org": "gies-ai-experiments"},
+            "granola": {"folder_id": "fld_lab"},
+        },
+    },
+    "project_channels": {
+        "C0LAB": {"allowed_projects": ["mindforum", "lab"], "default_project": "lab"},
+    },
+}
+
+
+def _channel(slack_cfg: dict) -> SlackChannel:
+    return SlackChannel(SlackConfig.model_validate(slack_cfg), MessageBus())
+
+
+def test_resolve_inbound_defaults_to_org_project():
+    p = _channel(_ORG_CFG)._resolve_inbound_project("C0LAB", "")
+    assert p is not None and p["name"] == "lab"
+    assert p["github"]["org"] == "gies-ai-experiments"
+
+
+def test_resolve_inbound_prefix_scopes_to_named_project():
+    p = _channel(_ORG_CFG)._resolve_inbound_project("C0LAB", "[mindforum] file it")
+    assert p is not None and p["name"] == "mindforum"
+    assert p["github"]["repos"] == ["gies-ai-experiments/MindForum"]
+
+
+def test_resolve_inbound_known_repo_slug_scopes_to_its_project():
+    p = _channel(_ORG_CFG)._resolve_inbound_project(
+        "C0LAB", "see gies-ai-experiments/MindForum"
+    )
+    assert p is not None and p["name"] == "mindforum"
+
+
+def test_resolve_inbound_unknown_channel_is_none():
+    assert _channel(_ORG_CFG)._resolve_inbound_project("C0OTHER", "") is None

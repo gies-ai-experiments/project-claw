@@ -45,6 +45,11 @@ class ProjectChannel(Base):
 
 _PROJECT_MAP_DEPRECATION_WARNED = False
 
+# Config-path project resolution (memory-off): an explicit "[project]" prefix and
+# "owner/name" repo slugs in the message body, mirroring the Postgres resolver.
+_PROJECT_PREFIX_RE = re.compile(r"\[([a-zA-Z0-9_\-]+)\]")
+_PROJECT_REPO_RE = re.compile(r"([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-\.]+)")
+
 
 class SlackConfig(Base):
     """Slack channel configuration."""
@@ -299,15 +304,56 @@ class SlackChannel(BaseChannel):
             self.logger.exception("Error sending message")
             raise
 
-    def _resolve_inbound_project(self, chat_id: str) -> dict[str, Any] | None:
-        project = self.config.project_map.get(chat_id)
-        if project is None and self.config.default_project is not None:
-            project = next(
-                (p for p in self.config.project_map.values()
-                 if p.name == self.config.default_project),
-                None,
-            )
-        return project.model_dump() if project is not None else None
+    def _resolve_inbound_project(self, chat_id: str, text: str = "") -> dict[str, Any] | None:
+        """Resolve the project for an inbound message from channel-local config.
+
+        The memory-off counterpart to the Postgres ``ProjectResolver``: an explicit
+        ``[project]`` prefix wins, else a project name / known repo slug mentioned
+        in the body, else the channel's single allowed project, else its configured
+        default. Reads the new ``projects`` + ``project_channels`` structure (the
+        legacy ``project_map`` is shimmed into it at load).
+        """
+        cfg = self.config
+        pc = cfg.project_channels.get(chat_id)
+        allowed = [n for n in (pc.allowed_projects if pc else []) if n in cfg.projects]
+        if not allowed:
+            return None
+
+        def dump(name: str) -> dict[str, Any]:
+            return cfg.projects[name].model_dump()
+
+        body = text or ""
+        # 1. An explicit [project] prefix is authoritative.
+        prefixes = {m.group(1) for m in _PROJECT_PREFIX_RE.finditer(body) if m.group(1) in allowed}
+        if len(prefixes) == 1:
+            return dump(next(iter(prefixes)))
+        if len(prefixes) > 1:
+            return None  # ambiguous — let the agent ask which project
+
+        # 2. Loose signals: a project name, or a known owner/name repo slug.
+        candidates: set[str] = set()
+        lower = body.lower()
+        for name in allowed:
+            if name.lower() in lower:
+                candidates.add(name)
+        for m in _PROJECT_REPO_RE.finditer(body):
+            repo = m.group(1)
+            for name in allowed:
+                gh = cfg.projects[name].github
+                if gh and repo in (gh.repos or []):
+                    candidates.add(name)
+        if len(candidates) == 1:
+            return dump(next(iter(candidates)))
+
+        # 3. A channel with exactly one allowed project — unambiguous default.
+        if len(allowed) == 1:
+            return dump(allowed[0])
+
+        # 4. The channel's configured default project.
+        if pc and pc.default_project and pc.default_project in cfg.projects:
+            return dump(pc.default_project)
+
+        return None
 
     @staticmethod
     def _is_brainstorm(text: str) -> bool:
@@ -573,7 +619,7 @@ class SlackChannel(BaseChannel):
                         "reply_thread_ts": reply_thread_ts,
                         "channel_type": channel_type,
                     },
-                    "project": self._resolve_inbound_project(chat_id),
+                    "project": self._resolve_inbound_project(chat_id, content),
                 },
                 session_key=session_key,
             )
@@ -658,7 +704,7 @@ class SlackChannel(BaseChannel):
                 content=value,
                 metadata={
                     "slack": {"thread_ts": thread_ts, "channel_type": channel_type},
-                    "project": self._resolve_inbound_project(chat_id),
+                    "project": self._resolve_inbound_project(chat_id, value),
                 },
                 session_key=session_key,
             )
