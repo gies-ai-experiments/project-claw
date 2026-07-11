@@ -843,12 +843,13 @@ async def test_inbound_from_unmapped_channel_no_default_has_null_project() -> No
 
 
 @pytest.mark.asyncio
-async def test_inbound_from_unmapped_channel_with_default_uses_default() -> None:
+async def test_inbound_from_unmapped_channel_ignores_global_default() -> None:
+    """Per-channel resolution: a legacy global default_project applies only to the
+    channel that hosts it (via the shim), not to unmapped channels — those resolve
+    to null so projectclaw asks the user which project to use."""
     channel = SlackChannel(_project_map_cfg(default_project="foo"), MessageBus())
     kwargs = await _drive_app_mention(channel, "C9999ZZZZZ")
-    project = kwargs["metadata"].get("project")
-    assert project is not None
-    assert project["name"] == "foo"
+    assert kwargs["metadata"].get("project") is None
 
 
 # --- "thinking…" placeholder so the user sees the claw is working ---

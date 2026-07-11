@@ -40,7 +40,7 @@ def test_github_skill_is_always_on(loader: SkillsLoader) -> None:
 def test_github_skill_requires_scoping_to_metadata_project(loader: SkillsLoader) -> None:
     body = loader.load_skill("github") or ""
     assert re.search(r"metadata\.project\.github\.repos", body)
-    assert re.search(r"never query a repo not in", body, re.IGNORECASE)
+    assert re.search(r"never\s+query\s+a\s+repo\s+(?:not in|outside)", body, re.IGNORECASE)
 
 
 def test_github_skill_provides_open_prs_query(loader: SkillsLoader) -> None:
