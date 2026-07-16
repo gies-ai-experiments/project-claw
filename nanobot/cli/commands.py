@@ -1092,6 +1092,20 @@ def _run_gateway(
                 if project.github and len(project.github.repos) == 1 else ""
             )
             roster = _json.dumps([p.model_dump(by_alias=True) for p in project.people])
+
+            # Ingest the note into L1 memory (distiller → L2 facts) when memory is on.
+            store = getattr(agent, "_message_store", None)
+            if store is not None:
+                from nanobot.agent.tools.granola import _granola_get
+                from nanobot.meeting_summary.ingest import ingest_note
+
+                full = await _granola_get(config.tools.granola, f"/notes/{note.get('id')}")
+                if isinstance(full, dict):
+                    try:
+                        await ingest_note(store, project, full, channel_id=ms.summary_channel)
+                    except Exception:
+                        logger.exception("daily-digest: note ingest failed for '%s'", project.name)
+
             trigger = (
                 f"A new Granola meeting note landed for project '{project.name}'. "
                 f"Run the meeting-summary skill.\n"
