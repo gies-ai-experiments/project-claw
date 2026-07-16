@@ -916,6 +916,16 @@ def _run_gateway(
                 logger.exception("Distiller cron job failed")
             return None
 
+        # Daily digest is an internal job — runs the digest tick, no agent turn here.
+        if job.name == "daily-digest":
+            if daily_digest is None:
+                return None
+            try:
+                await daily_digest.tick()
+            except Exception:
+                logger.exception("Daily-digest cron job failed")
+            return None
+
         from nanobot.utils.evaluator import evaluate_response
 
         reminder_note = (
@@ -1142,6 +1152,53 @@ def _run_gateway(
         )
         console.print(f"[green]✓[/green] Meeting-summary: every {ms_cfg.interval_s}s")
 
+    # Daily digest: once/day per project, compare project memory vs live GitHub.
+    dd_cfg = config.gateway.daily_digest
+    daily_digest = None
+    if dd_cfg.enabled:
+        from nanobot.channels.slack import SlackConfig as _SlackConfig
+        from nanobot.daily_digest import DailyDigestService
+        from nanobot.daily_digest.service import _channel as _dd_channel
+
+        _slack_raw = getattr(config.channels, "slack", None)
+        _slack = (
+            _slack_raw if isinstance(_slack_raw, _SlackConfig)
+            else _SlackConfig.model_validate(_slack_raw) if _slack_raw else None
+        )
+        dd_projects = list(_slack.projects.values()) if _slack else []
+
+        async def on_digest(project):
+            from datetime import datetime, timedelta
+            from datetime import timezone as _tzinfo
+
+            channel = _dd_channel(project)
+            repos = " ".join(project.github.repos) if project.github else ""
+            since = (datetime.now(_tzinfo.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            trigger = (
+                f"Daily digest for project '{project.name}'. Run the project-digest skill.\n"
+                f"project: {project.name}\nrepos: {repos}\n"
+                f"since: {since}\ndigest_channel: {channel}"
+            )
+
+            async def _silent(*_a, **_k):
+                pass
+
+            resp = await agent.process_direct(
+                trigger, session_key=f"daily-digest:{project.name}",
+                channel="slack", chat_id=channel, on_progress=_silent,
+            )
+            if resp and resp.content.strip():
+                await _deliver_to_channel(
+                    OutboundMessage(channel="slack", chat_id=channel, content=resp.content),
+                    record=True,
+                )
+
+        daily_digest = DailyDigestService(
+            dd_projects, on_digest,
+            state_path=config.workspace_path / "daily_digest_state.json",
+        )
+        console.print(f"[green]✓[/green] Daily-digest: cron '{dd_cfg.cron}'")
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -1248,6 +1305,13 @@ def _run_gateway(
                 console.print(
                     f"[green]✓[/green] Distiller: {config.memory.describe_distiller_schedule()}"
                 )
+            if daily_digest is not None:
+                cron.register_system_job(CronJob(
+                    id="daily-digest",
+                    name="daily-digest",
+                    schedule=dd_cfg.digest_schedule(config.agents.defaults.timezone),
+                    payload=CronPayload(kind="system_event"),
+                ))
             await cron.start()
             await heartbeat.start()
             if meeting_summary:

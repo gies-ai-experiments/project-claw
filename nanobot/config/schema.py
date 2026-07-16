@@ -343,6 +343,10 @@ class DailyDigestConfig(Base):
     enabled: bool = False
     cron: str = "0 9 * * *"  # daily 09:00 in gateway/agents timezone
 
+    def digest_schedule(self, timezone: str) -> CronSchedule:
+        """Build the cron schedule for the daily-digest tick."""
+        return CronSchedule(kind="cron", expr=self.cron, tz=timezone)
+
 
 class GatewayConfig(Base):
     """Gateway/server configuration."""
