@@ -600,6 +600,38 @@ def _migrate_cron_store(config: "Config") -> None:
 # ============================================================================
 
 
+@app.command(name="provision-channels")
+def provision_channels_cmd(
+    dry_run: bool = typer.Option(True, "--dry-run/--create", help="Preview without creating"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+):
+    """Create one Slack channel per project (dev-side); prints the config mapping."""
+    import asyncio as _asyncio
+
+    from slack_sdk.web.async_client import AsyncWebClient
+
+    from nanobot.channels.slack import SlackConfig
+    from nanobot.cli.provision import provision_channels
+    from nanobot.config.loader import load_config, set_config_path
+
+    if config:
+        set_config_path(config)
+    cfg = load_config()
+    slack = SlackConfig.model_validate(cfg.channels.slack)
+    web = AsyncWebClient(token=slack.bot_token)
+    existing = {
+        name: chan_id
+        for chan_id, pc in slack.project_channels.items()
+        for name in pc.allowed_projects
+    }
+    rows = _asyncio.run(
+        provision_channels(web, list(slack.projects.values()), existing, dry_run)
+    )
+    for r in rows:
+        console.print(r)
+    console.print("[yellow]Bake channel_id values into config projects/projectChannels.[/yellow]")
+
+
 @app.command()
 def serve(
     port: int | None = typer.Option(None, "--port", "-p", help="API server port"),
