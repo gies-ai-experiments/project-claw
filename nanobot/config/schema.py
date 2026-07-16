@@ -77,6 +77,13 @@ class MeetingSummaryProjectConfig(Base):
     issue_repo: str = ""  # owner/name for GitHub issues; needed when github.repos has >1
 
 
+class DailyDigestProjectConfig(Base):
+    """Per-project daily-digest settings (opt-in)."""
+
+    enabled: bool = False
+    digest_channel: str = ""  # Slack channel ID; falls back to meeting_summary.summary_channel
+
+
 class Project(Base):
     """A projectclaw project: a name plus at least one data source."""
 
@@ -84,6 +91,7 @@ class Project(Base):
     github: GitHubProjectConfig | None = None
     granola: GranolaProjectConfig | None = None
     meeting_summary: MeetingSummaryProjectConfig | None = None
+    daily_digest: DailyDigestProjectConfig | None = None
     people: list[PersonConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -329,6 +337,13 @@ class MeetingSummaryConfig(Base):
     interval_s: int = 900  # 15 minutes
 
 
+class DailyDigestConfig(Base):
+    """Global daily-digest scheduler settings."""
+
+    enabled: bool = False
+    cron: str = "0 9 * * *"  # daily 09:00 in gateway/agents timezone
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
@@ -336,6 +351,7 @@ class GatewayConfig(Base):
     port: int = 18790
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     meeting_summary: MeetingSummaryConfig = Field(default_factory=MeetingSummaryConfig)
+    daily_digest: DailyDigestConfig = Field(default_factory=DailyDigestConfig)
 
 
 class MCPServerConfig(Base):
