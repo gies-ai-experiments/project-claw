@@ -777,19 +777,30 @@ class SlackChannel(BaseChannel):
         return lines
 
     @staticmethod
-    def _build_button_blocks(text: str, buttons: list[list[str]]) -> list[dict[str, Any]]:
-        """Build Slack Block Kit blocks with action buttons."""
+    def _build_button_blocks(text: str, buttons: list[list[Any]]) -> list[dict[str, Any]]:
+        """Build Slack Block Kit blocks with action buttons.
+
+        Each button item is either a plain ``str`` (label doubles as the click
+        value, the legacy form) or a ``[label, value]`` pair so a button can show
+        a friendly label while carrying a distinct action value. ``action_id`` is
+        made unique per button so repeated labels (e.g. two "Approve"s) don't
+        collide.
+        """
         blocks: list[dict[str, Any]] = [
             {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}},
         ]
         elements = []
         for row in buttons:
-            for label in row:
+            for item in row:
+                if isinstance(item, (list, tuple)):
+                    label, value = str(item[0]), str(item[1])
+                else:
+                    label = value = str(item)
                 elements.append({
                     "type": "button",
                     "text": {"type": "plain_text", "text": label[:75]},
-                    "value": label[:75],
-                    "action_id": f"btn_{label[:50]}",
+                    "value": value[:75],
+                    "action_id": f"btn_{len(elements)}",
                 })
         if elements:
             blocks.append({"type": "actions", "elements": elements[:25]})
