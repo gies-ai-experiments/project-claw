@@ -93,6 +93,8 @@ class Project(Base):
     meeting_summary: MeetingSummaryProjectConfig | None = None
     daily_digest: DailyDigestProjectConfig | None = None
     people: list[PersonConfig] = Field(default_factory=list)
+    channel: str = ""  # Slack channel ID this project's summaries/digests post into
+    description: str = ""  # one-line blurb used by the meeting classifier to route to it
 
     @model_validator(mode="after")
     def _require_at_least_one_source(self) -> "Project":
@@ -348,6 +350,16 @@ class DailyDigestConfig(Base):
         return CronSchedule(kind="cron", expr=self.cron, tz=timezone)
 
 
+class MeetingClassifierConfig(Base):
+    """Global meeting-classifier settings: poll one shared Granola folder, classify
+    each note per project, and route drafts to an admin for approval."""
+
+    enabled: bool = False
+    folder_id: str = ""  # the single shared Granola folder holding all meetings
+    admin_slack_id: str = ""  # Slack user ID that approves/skips per-project drafts
+    interval_s: int = 900  # 15 minutes
+
+
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
@@ -356,6 +368,7 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
     meeting_summary: MeetingSummaryConfig = Field(default_factory=MeetingSummaryConfig)
     daily_digest: DailyDigestConfig = Field(default_factory=DailyDigestConfig)
+    meeting_classifier: MeetingClassifierConfig = Field(default_factory=MeetingClassifierConfig)
 
 
 class MCPServerConfig(Base):
