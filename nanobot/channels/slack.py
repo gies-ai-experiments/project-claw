@@ -161,6 +161,13 @@ class SlackChannel(BaseChannel):
         # "{chat_id}:{event_ts}" -> ts of the "thinking…" placeholder message,
         # awaiting replacement (or cleanup) when the reply lands.
         self._thinking: dict[str, str] = {}
+        # Optional handler for approval-style button clicks (value starts "mtg-"),
+        # wired at boot. When set, such clicks route here instead of the agent loop.
+        self._approval_callback: Any = None
+
+    def set_approval_callback(self, cb: Any) -> None:
+        """Route button clicks whose value starts 'mtg-' to `cb(sender_id, value)`."""
+        self._approval_callback = cb
 
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
@@ -690,6 +697,14 @@ class SlackChannel(BaseChannel):
         channel_info = payload.get("channel") or {}
         chat_id = str(channel_info.get("id") or "")
         if not sender_id or not chat_id or not value:
+            return
+        # Approval buttons (meeting classifier) route to their own handler, not
+        # the agent loop. The handler enforces its own admin check.
+        if self._approval_callback is not None and value.startswith("mtg-"):
+            try:
+                await self._approval_callback(sender_id, value)
+            except Exception:
+                self.logger.exception("approval callback failed")
             return
         message_info = payload.get("message") or {}
         thread_ts = message_info.get("thread_ts") or message_info.get("ts")

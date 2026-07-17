@@ -1231,6 +1231,104 @@ def _run_gateway(
         )
         console.print(f"[green]✓[/green] Daily-digest: cron '{dd_cfg.cron}'")
 
+    # Meeting classifier: one shared folder → classify per project → admin approval → fan-out.
+    mc_cfg = config.gateway.meeting_classifier
+    meeting_classifier = None
+    if mc_cfg.enabled:
+        import json as _json_mc
+
+        from nanobot.channels.slack import SlackConfig as _SlackConfigMC
+        from nanobot.meeting_classifier import ApprovalStore, MeetingClassifierService
+        from nanobot.meeting_classifier import fanout as _mc_fo
+
+        _raw_mc = getattr(config.channels, "slack", None)
+        _slack_mc = (
+            _raw_mc if isinstance(_raw_mc, _SlackConfigMC)
+            else _SlackConfigMC.model_validate(_raw_mc) if _raw_mc else None
+        )
+        mc_projects = list(_slack_mc.projects.values()) if _slack_mc else []
+        mc_known = {p.name for p in mc_projects}
+        mc_channel_of = {p.name: p.channel for p in mc_projects}
+        mc_store = ApprovalStore(config.workspace_path / "meeting_classifier_store.json")
+
+        async def _mc_silent(*_a, **_k):
+            pass
+
+        async def mc_on_new_note(note):
+            note_id = str(note.get("id") or "")
+            registry = _json_mc.dumps(
+                [{"name": p.name, "description": p.description} for p in mc_projects]
+            )
+            title = note.get("title") or ""
+            trigger = (
+                "Classify this meeting note per project. Run the meeting-classify skill.\n"
+                f"note_id: {note_id}\ntitle: {title}\nprojects: {registry}"
+            )
+            resp = await agent.process_direct(
+                trigger, session_key=f"meeting-classify:{note_id}",
+                channel="slack", chat_id=mc_cfg.admin_slack_id, on_progress=_mc_silent,
+            )
+            drafts = _mc_fo.parse_classification(resp.content if resp else "", mc_known)
+            if not drafts:
+                await _deliver_to_channel(OutboundMessage(
+                    channel="slack", chat_id=mc_cfg.admin_slack_id,
+                    content=f"Meeting '{title or note_id}': no project matched.",
+                ), record=False)
+                return
+            for d in drafts:
+                d["title"] = title
+                mc_store.add_draft(note_id, d["project"], d)
+            text, buttons = _mc_fo.build_approval(title, note_id, drafts)
+            await _deliver_to_channel(OutboundMessage(
+                channel="slack", chat_id=mc_cfg.admin_slack_id, content=text, buttons=buttons,
+            ), record=False)
+
+        async def mc_on_action(sender_id, value):
+            if sender_id != mc_cfg.admin_slack_id:
+                return
+            parsed = _mc_fo.parse_action(value)
+            if not parsed:
+                return
+            decision, note_id, project = parsed
+            entry = mc_store.get_draft(note_id, project)
+            if not entry:
+                return
+            draft = entry["draft"]
+            if decision == "skip":
+                mc_store.mark(note_id, project, "skipped")
+                return
+            if not mc_store.mark(note_id, project, "approved"):
+                return  # already decided — idempotent
+            channel = mc_channel_of.get(project, "")
+            if not channel:
+                return
+            await _deliver_to_channel(OutboundMessage(
+                channel="slack", chat_id=channel,
+                content=_mc_fo.format_post(project, draft.get("title", ""), draft),
+            ), record=True)
+            store = getattr(agent, "_message_store", None)
+            if store is not None:
+                from nanobot.meeting_summary.ingest import ingest_note
+                proj_obj = next((p for p in mc_projects if p.name == project), None)
+                if proj_obj is not None:
+                    await ingest_note(store, proj_obj, {
+                        "id": f"{note_id}:{project}",
+                        "title": f"{draft.get('title', 'Meeting')} ({project})",
+                        "summary": draft.get("summary", ""),
+                        "transcript": "\n".join(draft.get("actions") or []),
+                    }, channel_id=channel)
+
+        _sc_mc = channels.get_channel("slack")
+        if _sc_mc is not None and hasattr(_sc_mc, "set_approval_callback"):
+            _sc_mc.set_approval_callback(mc_on_action)
+
+        meeting_classifier = MeetingClassifierService(
+            config.tools.granola, mc_cfg.folder_id, mc_on_new_note,
+            state_path=config.workspace_path / "meeting_classifier_state.json",
+            interval_s=mc_cfg.interval_s,
+        )
+        console.print(f"[green]✓[/green] Meeting-classifier: folder {mc_cfg.folder_id}")
+
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
@@ -1348,6 +1446,8 @@ def _run_gateway(
             await heartbeat.start()
             if meeting_summary:
                 await meeting_summary.start()
+            if meeting_classifier:
+                await meeting_classifier.start()
             tasks = [
                 agent.run(),
                 channels.start_all(),
@@ -1368,6 +1468,8 @@ def _run_gateway(
             heartbeat.stop()
             if meeting_summary:
                 meeting_summary.stop()
+            if meeting_classifier:
+                meeting_classifier.stop()
             cron.stop()
             agent.stop()
             await channels.stop_all()
