@@ -9,6 +9,10 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
+from pydantic import ValidationError
+
+from nanobot.meeting_classifier.models import ProjectDraft
+
 _APPROVE = "mtg-approve"
 _SKIP = "mtg-skip"
 
@@ -42,6 +46,36 @@ def parse_classification(content: str, known_projects: set[str]) -> list[dict[st
             "actions": [str(a).strip() for a in (item.get("actions") or []) if str(a).strip()],
         })
     return out
+
+
+def parse_structured_classification(
+    content: str, known_projects: set[str]
+) -> list[ProjectDraft]:
+    """Parse validated project/task drafts, dropping invalid or unknown entries."""
+    text = (content or "").strip()
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline == -1:
+            return []
+        text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+
+    drafts: list[ProjectDraft] = []
+    for item in data:
+        try:
+            draft = ProjectDraft.model_validate(item)
+        except (ValidationError, TypeError):
+            continue
+        if draft.project in known_projects or draft.is_new_project:
+            drafts.append(draft)
+    return drafts
 
 
 def button_value(decision: str, note_id: str, project: str) -> str:

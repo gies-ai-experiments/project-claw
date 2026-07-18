@@ -5,6 +5,7 @@ from nanobot.meeting_classifier.fanout import (
     format_post,
     parse_action,
     parse_classification,
+    parse_structured_classification,
 )
 
 KNOWN = {"atlas", "glp-v2"}
@@ -72,3 +73,42 @@ def test_build_button_blocks_legacy_string_still_works():
 def test_format_post_includes_summary_and_actions():
     out = format_post("atlas", "Standup", {"summary": "did x", "actions": ["a1", "a2"]})
     assert "atlas" in out and "did x" in out and "a1" in out and "a2" in out
+
+
+def test_parser_accepts_existing_and_new_project_drafts():
+    raw = """[
+      {"project":"atlas","isNewProject":false,"summary":"Existing","tasks":[]},
+      {"project":"new-lab","isNewProject":true,"displayName":"New Lab",
+       "description":"Research project","channelSlug":"new-lab",
+       "lead":{"name":"Lead","email":"lead@example.edu"},
+       "summary":"Initial meeting","tasks":[
+         {"id":"t1","title":"Draft charter","owner":null,
+          "collaborators":[],"dueOn":null,"dueOnSource":null}
+       ]}
+    ]"""
+
+    drafts = parse_structured_classification(raw, {"atlas"})
+
+    assert [draft.project for draft in drafts] == ["atlas", "new-lab"]
+    assert drafts[1].is_new_project is True
+
+
+def test_structured_parser_strips_one_optional_fence():
+    raw = '```json\n[{"project":"atlas","tasks":[]}]\n```'
+    assert parse_structured_classification(raw, KNOWN)[0].project == "atlas"
+
+
+def test_structured_parser_drops_invalid_and_unknown_entries():
+    raw = """[
+      {"project":"atlas","tasks":[]},
+      {"project":"ghost","tasks":[]},
+      {"project":"new-lab","isNewProject":true,"tasks":[]},
+      {"project":"atlas","tasks":[{"id":"t1","title":" "}]},
+      "not-an-object"
+    ]"""
+    assert [draft.project for draft in parse_structured_classification(raw, KNOWN)] == ["atlas"]
+
+
+def test_structured_parser_rejects_malformed_top_level_json():
+    assert parse_structured_classification("not json", KNOWN) == []
+    assert parse_structured_classification('{"project":"atlas"}', KNOWN) == []
