@@ -736,32 +736,13 @@ def gateway(
     _run_gateway(cfg, port=port)
 
 
-async def _setup_agent_memory(agent: AgentLoop, config: Config):
-    """Wire the Postgres memory store into the loop, gated by cfg.memory.active.
-
-    Returns the asyncpg pool (to close on shutdown) or None. Any failure is
-    logged and swallowed so the gateway still starts without memory.
-    """
-    if not config.memory.active:
-        return None
+async def _setup_agent_memory(agent: AgentLoop, config: Config, pool: Any) -> None:
+    """Attach optional conversation memory to an already initialized database."""
+    if not config.memory.active or pool is None:
+        return
     try:
         from nanobot.channels.project_resolver import ProjectResolver
-        from nanobot.channels.slack import SlackConfig
         from nanobot.store.message_store import MessageStore
-        from nanobot.store.migrations import apply_migrations
-        from nanobot.store.pool import init_pool
-        from nanobot.store.registry_sync import sync_project_registry
-
-        pool = await init_pool(config.memory.dsn)
-        async with pool.acquire() as conn:
-            await apply_migrations(conn)
-            slack_raw = getattr(config.channels, "slack", None)
-            if slack_raw:
-                slack_cfg = (
-                    slack_raw if isinstance(slack_raw, SlackConfig)
-                    else SlackConfig.model_validate(slack_raw)
-                )
-                await sync_project_registry(conn, slack_cfg)
         agent.attach_memory(
             MessageStore(pool), ProjectResolver(pool), config.memory.inject_limit
         )
@@ -770,10 +751,8 @@ async def _setup_agent_memory(agent: AgentLoop, config: Config):
         if config.memory.distiller_active:
             _attach_distiller(agent, pool, config)
 
-        return pool
-    except Exception as exc:  # noqa: BLE001 - never block gateway startup
-        logger.warning("memory setup failed; continuing without memory: {}", exc)
-        return None
+    except Exception:  # noqa: BLE001 - never block gateway startup
+        logger.warning("memory setup failed; continuing without memory")
 
 
 def _attach_distiller(agent: AgentLoop, pool: Any, config: Config) -> None:
@@ -1422,9 +1401,19 @@ def _run_gateway(
             console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
 
     async def run():
-        memory_pool = None
+        database_pool = None
         try:
-            memory_pool = await _setup_agent_memory(agent, config)
+            from nanobot.channels.slack import SlackConfig
+            from nanobot.store.database import setup_database
+
+            slack_channel = (
+                channels.get_channel("slack") if hasattr(channels, "get_channel") else None
+            )
+            slack_runtime = getattr(slack_channel, "config", None)
+            if slack_runtime is not None and not isinstance(slack_runtime, SlackConfig):
+                slack_runtime = SlackConfig.model_validate(slack_runtime)
+            database_pool = await setup_database(config, slack_runtime)
+            await _setup_agent_memory(agent, config, database_pool)
             if getattr(agent, "distiller", None) is not None:
                 cron.register_system_job(CronJob(
                     id="distill",
@@ -1479,9 +1468,11 @@ def _run_gateway(
             flushed = agent.sessions.flush_all()
             if flushed:
                 logger.info("Shutdown: flushed {} session(s) to disk", flushed)
-            if memory_pool is not None:
+            if database_pool is not None:
                 with suppress(Exception):
-                    await memory_pool.close()
+                    from nanobot.store.pool import close_pool
+
+                    await close_pool()
 
     asyncio.run(run())
 

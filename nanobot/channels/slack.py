@@ -184,6 +184,13 @@ class SlackChannel(BaseChannel):
         """Wait until Socket Mode has connected successfully."""
         await asyncio.wait_for(self._ready.wait(), timeout=timeout_s)
 
+    def activate_project(self, project: Project, channel_id: str) -> None:
+        """Activate a newly provisioned project in the live channel registry."""
+        self.config.projects[project.name] = project
+        self.config.project_channels[channel_id] = ProjectChannel(
+            allowed_projects=[project.name], default_project=project.name
+        )
+
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
         if not self.config.bot_token or not self.config.app_token:

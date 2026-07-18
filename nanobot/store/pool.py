@@ -1,4 +1,4 @@
-"""Single asyncpg pool for the projectclaw memory store."""
+"""Single asyncpg pool for the ProjectClaw runtime database."""
 from __future__ import annotations
 
 import asyncpg
@@ -12,13 +12,13 @@ async def init_pool(dsn: str, min_size: int = 2, max_size: int = 10) -> asyncpg.
     if _pool is not None:
         return _pool
     _pool = await asyncpg.create_pool(dsn=dsn, min_size=min_size, max_size=max_size)
-    logger.info("memory-store pool opened ({}..{})", min_size, max_size)
+    logger.info("projectclaw database pool opened ({}..{})", min_size, max_size)
     return _pool
 
 
 def get_pool() -> asyncpg.Pool:
     if _pool is None:
-        raise RuntimeError("memory-store pool not initialized")
+        raise RuntimeError("projectclaw database pool not initialized")
     return _pool
 
 

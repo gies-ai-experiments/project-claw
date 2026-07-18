@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from nanobot.channels.slack import SlackConfig
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.slack import SlackChannel, SlackConfig
+from nanobot.config.schema import Project
 
 
 def test_loads_projects_registry_and_project_channels():
@@ -73,3 +75,12 @@ def test_empty_config_has_empty_registry():
     cfg = SlackConfig.model_validate({})
     assert cfg.projects == {}
     assert cfg.project_channels == {}
+
+
+def test_live_channel_activation_adds_dynamic_default_mapping():
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    project = Project(name="new-lab", asana={"projectGid": "A1"})
+    channel.activate_project(project, "CNEW")
+    assert channel.config.projects["new-lab"] == project
+    assert channel.config.project_channels["CNEW"].allowed_projects == ["new-lab"]
+    assert channel.config.project_channels["CNEW"].default_project == "new-lab"
