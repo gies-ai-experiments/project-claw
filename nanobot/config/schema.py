@@ -60,6 +60,12 @@ class GranolaProjectConfig(Base):
         return self
 
 
+class AsanaProjectConfig(Base):
+    """Asana portion of a projectclaw Project."""
+
+    project_gid: str
+
+
 class PersonConfig(Base):
     """A meeting attendee's identity, for @mentions and issue assignment."""
 
@@ -67,6 +73,7 @@ class PersonConfig(Base):
     name: str = ""
     slack_id: str = ""
     github_username: str = ""
+    asana_user_gid: str = ""
 
 
 class MeetingSummaryProjectConfig(Base):
@@ -90,6 +97,8 @@ class Project(Base):
     name: str
     github: GitHubProjectConfig | None = None
     granola: GranolaProjectConfig | None = None
+    asana: AsanaProjectConfig | None = None
+    lead_email: str = ""
     meeting_summary: MeetingSummaryProjectConfig | None = None
     daily_digest: DailyDigestProjectConfig | None = None
     people: list[PersonConfig] = Field(default_factory=list)
@@ -98,9 +107,9 @@ class Project(Base):
 
     @model_validator(mode="after")
     def _require_at_least_one_source(self) -> "Project":
-        if self.github is None and self.granola is None:
+        if self.github is None and self.granola is None and self.asana is None:
             raise ValueError(
-                f"project '{self.name}' must define at least one of github/granola"
+                f"project '{self.name}' must define at least one of github/granola/asana"
             )
         return self
 
@@ -454,6 +463,33 @@ class MemoryConfig(Base):
         return f"cron {self.distiller_cron}"
 
 
+class DatabaseConfig(Base):
+    """General database connection shared by database-backed features."""
+
+    dsn: str | None = None
+
+
+class AsanaIntegrationConfig(Base):
+    """Global Asana integration settings."""
+
+    enabled: bool = False
+    access_token: str = ""
+    workspace_gid: str = ""
+    team_gid: str = ""
+    base_url: str = "https://app.asana.com/api/1.0"
+    new_project_privacy: Literal["private"] = "private"
+
+    @property
+    def active(self) -> bool:
+        return self.enabled
+
+
+class IntegrationsConfig(Base):
+    """Configuration for external service integrations."""
+
+    asana: AsanaIntegrationConfig = Field(default_factory=AsanaIntegrationConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -463,6 +499,8 @@ class Config(BaseSettings):
     api: ApiConfig = Field(default_factory=ApiConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     model_presets: dict[str, ModelPresetConfig] = Field(
         default_factory=dict,
@@ -479,6 +517,28 @@ class Config(BaseSettings):
         for fallback in self.agents.defaults.fallback_models:
             if isinstance(fallback, str) and fallback not in self.model_presets:
                 raise ValueError(f"fallback_models entry {fallback!r} not found in model_presets")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_database_integrations(self) -> "Config":
+        asana = self.integrations.asana
+        if asana.enabled:
+            if not self.database.dsn:
+                raise ValueError("integrations.asana.enabled requires database.dsn")
+            missing = [
+                name
+                for name in ("access_token", "workspace_gid", "team_gid")
+                if not getattr(asana, name)
+            ]
+            if missing:
+                fields = ", ".join(f"integrations.asana.{name}" for name in missing)
+                raise ValueError(f"integrations.asana.enabled requires {fields}")
+        if (
+            self.database.dsn
+            and self.memory.dsn
+            and self.database.dsn != self.memory.dsn
+        ):
+            raise ValueError("database.dsn and memory.dsn must use the same Postgres DSN")
         return self
 
     def resolve_default_preset(self) -> ModelPresetConfig:
