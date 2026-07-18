@@ -1213,25 +1213,33 @@ def _run_gateway(
     # Meeting classifier: one shared folder → classify per project → admin approval → fan-out.
     mc_cfg = config.gateway.meeting_classifier
     meeting_classifier = None
-    if mc_cfg.enabled:
-        import json as _json_mc
+    provisioning_worker = None
+    asana_client = None
+    meeting_coordinator = None
+    _slack_mc = None
 
+    async def _mc_silent(*_a, **_k):
+        pass
+
+    if mc_cfg.enabled:
         from nanobot.channels.slack import SlackConfig as _SlackConfigMC
-        from nanobot.meeting_classifier import ApprovalStore, MeetingClassifierService
-        from nanobot.meeting_classifier import fanout as _mc_fo
 
         _raw_mc = getattr(config.channels, "slack", None)
         _slack_mc = (
             _raw_mc if isinstance(_raw_mc, _SlackConfigMC)
             else _SlackConfigMC.model_validate(_raw_mc) if _raw_mc else None
         )
+
+    if mc_cfg.enabled and not config.integrations.asana.enabled:
+        import json as _json_mc
+
+        from nanobot.meeting_classifier import ApprovalStore, MeetingClassifierService
+        from nanobot.meeting_classifier import fanout as _mc_fo
+
         mc_projects = list(_slack_mc.projects.values()) if _slack_mc else []
         mc_known = {p.name for p in mc_projects}
         mc_channel_of = {p.name: p.channel for p in mc_projects}
         mc_store = ApprovalStore(config.workspace_path / "meeting_classifier_store.json")
-
-        async def _mc_silent(*_a, **_k):
-            pass
 
         async def mc_on_new_note(note):
             note_id = str(note.get("id") or "")
@@ -1262,7 +1270,10 @@ def _run_gateway(
                 channel="slack", chat_id=mc_cfg.admin_slack_id, content=text, buttons=buttons,
             ), record=False)
 
-        async def mc_on_action(sender_id, value):
+        async def mc_on_action(payload):
+            sender_id = str(((payload.get("user") or {}).get("id")) or "")
+            actions = payload.get("actions") or []
+            value = str((actions[0] if actions else {}).get("value") or "")
             if sender_id != mc_cfg.admin_slack_id:
                 return
             parsed = _mc_fo.parse_action(value)
@@ -1401,7 +1412,9 @@ def _run_gateway(
             console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
 
     async def run():
+        nonlocal asana_client, meeting_classifier, meeting_coordinator, provisioning_worker
         database_pool = None
+        channels_task = None
         try:
             from nanobot.channels.slack import SlackConfig
             from nanobot.store.database import setup_database
@@ -1414,6 +1427,123 @@ def _run_gateway(
                 slack_runtime = SlackConfig.model_validate(slack_runtime)
             database_pool = await setup_database(config, slack_runtime)
             await _setup_agent_memory(agent, config, database_pool)
+            channels_task = asyncio.create_task(channels.start_all())
+
+            if mc_cfg.enabled and config.integrations.asana.enabled:
+                if database_pool is None:
+                    raise RuntimeError("Asana meeting provisioning requires PostgreSQL.")
+                if slack_channel is None or not hasattr(slack_channel, "wait_until_ready"):
+                    raise RuntimeError("Asana meeting provisioning requires Slack Socket Mode.")
+                await slack_channel.wait_until_ready(60)
+
+                import json as _json_mc2
+                from datetime import UTC, date, datetime
+
+                from nanobot.integrations.asana import AsanaClient
+                from nanobot.integrations.slack_workspace import SlackWorkspaceClient
+                from nanobot.meeting_classifier import fanout as _mc_fo2
+                from nanobot.meeting_classifier.coordinator import MeetingApprovalCoordinator
+                from nanobot.meeting_classifier.identity import IdentityResolver
+                from nanobot.meeting_classifier.provisioning import ProvisioningWorker
+                from nanobot.meeting_classifier.repository import (
+                    ApprovalRepository,
+                    IdentityRepository,
+                    ProvisioningRepository,
+                )
+                from nanobot.meeting_classifier.service import MeetingClassifierService
+                from nanobot.store.runtime_registry import RuntimeProjectRegistry
+
+                asana_client = AsanaClient(config.integrations.asana)
+                await asana_client.validate_connection()
+                slack_workspace = SlackWorkspaceClient(lambda: slack_channel.web_client)
+                identity_repository = IdentityRepository(database_pool)
+                provisioning_repository = ProvisioningRepository(database_pool)
+                meeting_coordinator = MeetingApprovalCoordinator(
+                    ApprovalRepository(database_pool),
+                    provisioning_repository,
+                    IdentityResolver(identity_repository, slack_workspace, asana_client),
+                    slack_workspace,
+                    admin_slack_id=mc_cfg.admin_slack_id,
+                    known_projects=lambda: set(slack_channel.config.projects),
+                )
+                registry = RuntimeProjectRegistry(database_pool)
+                provisioning_worker = ProvisioningWorker(
+                    provisioning_repository,
+                    asana_client,
+                    slack_workspace,
+                    identity_repository,
+                    project_provider=lambda name: slack_channel.config.projects.get(name),
+                    admin_slack_id=mc_cfg.admin_slack_id,
+                    registry=registry,
+                    slack_channel=slack_channel,
+                )
+
+                async def mc2_on_new_note(note):
+                    note_id = str(note.get("id") or "")
+                    title = str(note.get("title") or "")
+                    live_projects = list(slack_channel.config.projects.values())
+                    known_projects = {project.name for project in live_projects}
+                    registry_json = _json_mc2.dumps([
+                        {"name": project.name, "description": project.description}
+                        for project in live_projects
+                    ])
+                    trigger = (
+                        "Classify this meeting note into structured project task drafts. "
+                        "Run the meeting-classify skill and return only its JSON array.\n"
+                        f"note_id: {note_id}\ntitle: {title}\nprojects: {registry_json}"
+                    )
+                    resp = await agent.process_direct(
+                        trigger,
+                        session_key=f"meeting-classify:{note_id}",
+                        channel="slack",
+                        chat_id=mc_cfg.admin_slack_id,
+                        on_progress=_mc_silent,
+                    )
+                    drafts = _mc_fo2.parse_structured_classification(
+                        resp.content if resp else "", known_projects
+                    )
+                    if not drafts:
+                        await _deliver_to_channel(
+                            OutboundMessage(
+                                channel="slack",
+                                chat_id=mc_cfg.admin_slack_id,
+                                content=f"Meeting '{title or note_id}': no project matched.",
+                            ),
+                            record=False,
+                        )
+                        return
+                    raw_date = str(
+                        note.get("meeting_date")
+                        or note.get("date")
+                        or note.get("created_at")
+                        or ""
+                    )
+                    try:
+                        meeting_date = date.fromisoformat(raw_date[:10])
+                    except ValueError:
+                        meeting_date = datetime.now(UTC).date()
+                    await meeting_coordinator.on_new_note(
+                        note_id, title, meeting_date, drafts
+                    )
+
+                async def mc2_on_interaction(payload):
+                    result = await meeting_coordinator.handle_interaction(payload)
+                    if result.job_id is not None or result.kind == "retrying":
+                        provisioning_worker.wake()
+                    return result.response_action
+
+                slack_channel.set_approval_callback(mc2_on_interaction)
+                await provisioning_worker.start()
+                meeting_classifier = MeetingClassifierService(
+                    config.tools.granola,
+                    mc_cfg.folder_id,
+                    mc2_on_new_note,
+                    state_path=config.workspace_path / "meeting_classifier_state.json",
+                    interval_s=mc_cfg.interval_s,
+                )
+                console.print(
+                    f"[green]✓[/green] Asana meeting provisioning: folder {mc_cfg.folder_id}"
+                )
             if getattr(agent, "distiller", None) is not None:
                 cron.register_system_job(CronJob(
                     id="distill",
@@ -1439,7 +1569,7 @@ def _run_gateway(
                 await meeting_classifier.start()
             tasks = [
                 agent.run(),
-                channels.start_all(),
+                channels_task,
                 _health_server(config.gateway.host, port),
             ]
             if open_browser_url:
@@ -1459,6 +1589,12 @@ def _run_gateway(
                 meeting_summary.stop()
             if meeting_classifier:
                 meeting_classifier.stop()
+            if provisioning_worker is not None:
+                with suppress(Exception):
+                    await provisioning_worker.stop()
+            if asana_client is not None:
+                with suppress(Exception):
+                    await asana_client.aclose()
             cron.stop()
             agent.stop()
             await channels.stop_all()

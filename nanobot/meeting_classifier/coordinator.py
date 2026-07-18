@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from uuid import UUID
 
 from nanobot.meeting_classifier.models import MeetingAction, PersonRef, ProjectDraft
@@ -34,7 +34,7 @@ class MeetingApprovalCoordinator:
         slack: Any,
         *,
         admin_slack_id: str,
-        known_projects: set[str] | None = None,
+        known_projects: set[str] | Callable[[], set[str]] | None = None,
     ) -> None:
         self.repo = approval_repository
         self._provisioning = provisioning_repository
@@ -192,9 +192,14 @@ class MeetingApprovalCoordinator:
         if not draft.tasks:
             return "At least one task is required."
         if self._known_projects is not None:
-            if draft.is_new_project and draft.project in self._known_projects:
+            known_projects = (
+                self._known_projects()
+                if callable(self._known_projects)
+                else self._known_projects
+            )
+            if draft.is_new_project and draft.project in known_projects:
                 return f"Project key {draft.project} already exists."
-            if not draft.is_new_project and draft.project not in self._known_projects:
+            if not draft.is_new_project and draft.project not in known_projects:
                 return f"Project {draft.project} is not configured."
         if draft.is_new_project and draft.lead is None:
             return "A new project requires exactly one lead."

@@ -70,3 +70,27 @@ async def test_coordinator_approves_valid_snapshot_atomically() -> None:
     })
     assert result.kind == "approved"
     assert repo.approved is True
+
+
+@pytest.mark.asyncio
+async def test_coordinator_reads_live_project_names_at_approval_time() -> None:
+    draft = ProjectDraft(project="dynamic", tasks=[TaskDraft(id="t1", title="Ship")])
+    repo = Repo(draft)
+    projects = {"atlas"}
+    coordinator = MeetingApprovalCoordinator(
+        repo,
+        None,
+        Identity(),
+        None,
+        admin_slack_id="U_SAKSHI",
+        known_projects=lambda: projects,
+    )
+    projects.add("dynamic")
+    result = await coordinator.handle_interaction({
+        "type": "block_actions",
+        "user": {"id": "U_SAKSHI"},
+        "actions": [{
+            "value": "mtg2:approve:11111111-1111-1111-1111-111111111111:0:-"
+        }],
+    })
+    assert result.kind == "approved"
