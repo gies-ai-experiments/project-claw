@@ -9,7 +9,9 @@ from typing import Any, Awaitable, Callable
 from slack_sdk.errors import SlackApiError, SlackClientError
 from slack_sdk.web.async_client import AsyncWebClient
 
-_SAFE_FAILURE = "Slack request failed."
+from nanobot.integrations.errors import safe_external_error
+
+_SAFE_FAILURE = safe_external_error("Slack", "request")
 _SAFE_NOT_READY = "Slack client is not ready."
 _SAFE_AMBIGUOUS = "Slack resource ownership is ambiguous."
 

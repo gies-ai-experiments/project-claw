@@ -74,6 +74,49 @@ class RuntimeProjectRegistry:
                         sorted(set(channels_for.get(project_id, []))),
                         sorted(set(defaults_for.get(project_id, []))),
                     )
+                    for person in project.people:
+                        email = person.email.strip().lower()
+                        slack_id = person.slack_id.strip() or None
+                        asana_gid = person.asana_user_gid.strip() or None
+                        await conn.execute(
+                            """
+                            INSERT INTO identity_directory
+                              (email_normalized, display_name, slack_user_id,
+                               asana_user_gid, verified_at)
+                            VALUES ($1, $2, $3, $4,
+                                    CASE WHEN $3::text IS NOT NULL AND $4::text IS NOT NULL
+                                         THEN now() ELSE NULL END)
+                            ON CONFLICT (email_normalized) DO UPDATE SET
+                              display_name=EXCLUDED.display_name,
+                              slack_user_id=COALESCE(EXCLUDED.slack_user_id,
+                                                     identity_directory.slack_user_id),
+                              asana_user_gid=COALESCE(EXCLUDED.asana_user_gid,
+                                                      identity_directory.asana_user_gid),
+                              verified_at=COALESCE(EXCLUDED.verified_at,
+                                                   identity_directory.verified_at)
+                            """,
+                            email,
+                            person.name or email,
+                            slack_id,
+                            asana_gid,
+                        )
+                        role = (
+                            "lead"
+                            if email == project.lead_email.strip().lower()
+                            else "participant"
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO project_membership
+                              (project_id, email_normalized, role)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (project_id, email_normalized) DO UPDATE
+                              SET role=EXCLUDED.role
+                            """,
+                            project_id,
+                            email,
+                            role,
+                        )
 
     async def load_dynamic(self) -> list[Project]:
         rows = await self._database.fetch(

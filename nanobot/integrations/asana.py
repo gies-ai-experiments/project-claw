@@ -9,9 +9,10 @@ from typing import Any
 import httpx
 
 from nanobot.config.schema import AsanaIntegrationConfig
+from nanobot.integrations.errors import safe_external_error
 from nanobot.meeting_classifier.models import ApprovalSnapshot, TaskDraft
 
-_SAFE_REQUEST_ERROR = "Asana request failed."
+_SAFE_REQUEST_ERROR = safe_external_error("Asana", "request")
 _SAFE_NOT_FOUND = "Asana resource was not found."
 _SAFE_AMBIGUOUS = "Asana reconciliation was ambiguous."
 _RESOURCE_FIELDS = "gid,name,notes,permalink_url"

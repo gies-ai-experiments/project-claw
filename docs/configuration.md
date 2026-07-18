@@ -30,6 +30,39 @@ Any string value in `config.json` can use `${VAR_NAME}`. Resolution runs once at
 
 If a referenced variable is unset, nanobot fails fast at startup with `ValueError: Environment variable 'NAME' referenced in config is not set`.
 
+## Asana meeting provisioning
+
+This workflow requires all of the following: `database.dsn`, an enabled `gateway.meetingClassifier`, Slack Socket Mode, and `integrations.asana.enabled`. Existing projects map `channels.slack.projects.<key>.asana.projectGid` and `channel`; people may supply `asanaUserGid` and `slackId`, while missing IDs are resolved by exact email before Sakshi can approve.
+
+```jsonc
+{
+  "database": { "dsn": "${PROJECTCLAW_DATABASE_DSN}" },
+  "integrations": {
+    "asana": {
+      "enabled": true,
+      "accessToken": "${ASANA_ACCESS_TOKEN}",
+      "workspaceGid": "1234567890",
+      "teamGid": "2345678901",
+      "newProjectPrivacy": "private"
+    }
+  },
+  "gateway": {
+    "meetingClassifier": {
+      "enabled": true,
+      "folderId": "fol_shared_meetings",
+      "adminSlackId": "U_SAKSHI",
+      "intervalS": 900
+    }
+  }
+}
+```
+
+New Asana projects are always private; new Slack project channels are public. Reinstall the Slack app after granting `channels:manage`, `channels:write.invites`, and `users:read.email`. The Asana PAT must have access to the configured workspace and team and permission to manage the projects/tasks created there.
+
+Provisioning stores an immutable approved snapshot and deterministic provenance markers. A restart safely resumes incomplete work without adopting same-name resources that lack its marker. Rate limits, timeouts, and server failures retry automatically; authorization failures and ambiguous matches enter `needs_attention`. Sakshi's Retry action resumes the same job without rollback.
+
+Before production enablement, use a test Slack workspace/channel namespace and Asana test team to approve one existing-project meeting and one new-project meeting. Verify lead ownership, assignments, followers, due dates, invitations, links, restart recovery, Retry, and that every external resource exists exactly once. Record only non-secret GIDs and outcomes.
+
 ### More examples
 
 **MCP servers** — both stdio `env` and HTTP `headers`:

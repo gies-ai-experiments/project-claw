@@ -33,6 +33,38 @@ async def test_static_seed_preserves_dynamic_external_ids(pg_schema):
 
 
 @pytest.mark.asyncio
+async def test_static_seed_caches_explicit_cross_service_identity_mapping(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    registry = RuntimeProjectRegistry(conn)
+    static = SlackConfig.model_validate({
+        "projects": {
+            "atlas": {
+                "name": "atlas",
+                "asana": {"projectGid": "A_PROJECT"},
+                "leadEmail": "ashley@example.edu",
+                "people": [{
+                    "name": "Ashley N",
+                    "email": "Ashley@Example.edu",
+                    "slackId": "U_ASHLEY",
+                    "asanaUserGid": "A_ASHLEY",
+                }],
+            }
+        }
+    })
+    await registry.seed_static(static)
+    identity = await conn.fetchrow(
+        "SELECT * FROM identity_directory WHERE email_normalized='ashley@example.edu'"
+    )
+    assert identity["slack_user_id"] == "U_ASHLEY"
+    assert identity["asana_user_gid"] == "A_ASHLEY"
+    assert identity["verified_at"] is not None
+    assert await conn.fetchval(
+        "SELECT role FROM project_membership WHERE project_id='atlas'"
+    ) == "lead"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("static_lead", ["different@example.edu", ""])
 async def test_static_seed_preserves_runtime_lead_and_membership(pg_schema, static_lead):
     schema, conn = pg_schema

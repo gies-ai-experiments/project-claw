@@ -196,6 +196,52 @@ Write to `~/.projectclaw/config.json` (chmod 600):
 
 A project must declare at least one of `github` or `granola`. To find a Granola `folderId`, hit `GET /v1/folders` with your token (or run the bot and ask it: `@projectclaw list our granola folders`).
 
+### Meeting approvals → Asana tasks
+
+When enabled, the shared Granola meeting classifier sends Sakshi an editable Slack review. Approval creates one unassigned meeting parent in the mapped Asana project, one subtask per approved action, the named owner as assignee, and all explicitly named collaborators as followers. A new-project approval also creates a private Asana project and a public Slack channel, assigns the approved lead, invites the meeting participants, and activates that project immediately.
+
+```jsonc
+{
+  "database": { "dsn": "${PROJECTCLAW_DATABASE_DSN}" },
+  "integrations": {
+    "asana": {
+      "enabled": true,
+      "accessToken": "${ASANA_ACCESS_TOKEN}",
+      "workspaceGid": "1234567890",
+      "teamGid": "2345678901",
+      "newProjectPrivacy": "private"
+    }
+  },
+  "gateway": {
+    "meetingClassifier": {
+      "enabled": true,
+      "folderId": "fol_shared_meetings",
+      "adminSlackId": "U_SAKSHI",
+      "intervalS": 900
+    }
+  },
+  "channels": {
+    "slack": {
+      "projects": {
+        "atlas": {
+          "name": "atlas",
+          "asana": { "projectGid": "3456789012" },
+          "channel": "C_ATLAS",
+          "people": [{
+            "name": "Ashley N",
+            "email": "ashley@example.edu",
+            "slackId": "U_ASHLEY",
+            "asanaUserGid": "4567890123"
+          }]
+        }
+      }
+    }
+  }
+}
+```
+
+The Slack app must be reinstalled after adding `channels:manage`, `channels:write.invites`, and `users:read.email`. The Asana token must be able to read the configured workspace/team and create projects, tasks, memberships, assignees, and followers. Keep the DSN and token in environment placeholders. Provisioning is resumable: retryable API failures remain queued; permanent or ambiguous failures move to `needs_attention` and Sakshi can retry the same immutable approval from Slack. It never rolls back already-created external resources.
+
 ### 6. Schedule the standup (optional)
 
 The bot can post two recurring updates to your project channel:

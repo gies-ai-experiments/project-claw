@@ -13,6 +13,7 @@ from nanobot.integrations.asana import (
     AsanaPermanentError,
     AsanaRetryableError,
 )
+from nanobot.integrations.errors import safe_external_error
 from nanobot.integrations.slack_workspace import (
     SlackAmbiguousError,
     SlackPermanentError,
@@ -115,7 +116,7 @@ class ProvisioningWorker:
             )
             await self._notify_failure(snapshot, exc.safe_message)
         except Exception:
-            safe_message = "Meeting provisioning needs operator attention."
+            safe_message = safe_external_error("Meeting provisioning", "unexpected operation")
             await self._repo.fail_step(
                 job.id, self._current_step, safe_message, permanent=True
             )

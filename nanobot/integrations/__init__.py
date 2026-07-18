@@ -8,6 +8,7 @@ from nanobot.integrations.asana import (
     AsanaRetryableError,
     AsanaUser,
 )
+from nanobot.integrations.errors import safe_external_error
 
 __all__ = [
     "AsanaAmbiguousError",
@@ -16,4 +17,5 @@ __all__ = [
     "AsanaResource",
     "AsanaRetryableError",
     "AsanaUser",
+    "safe_external_error",
 ]
