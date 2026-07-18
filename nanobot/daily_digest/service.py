@@ -22,13 +22,17 @@ def _channel(p: Project) -> str:
     dd = p.daily_digest
     if dd and dd.digest_channel:
         return dd.digest_channel
+    if p.channel:
+        return p.channel
     ms = p.meeting_summary
     return ms.summary_channel if ms else ""
 
 
 def _watched(p: Project) -> bool:
-    dd = p.daily_digest
-    return bool(dd and dd.enabled and _channel(p))
+    # "Every channel": any project with a channel and a GitHub repo source is
+    # covered when the global gateway.dailyDigest is on — no per-project opt-in.
+    has_repos = bool(p.github and (p.github.repos or p.github.org))
+    return bool(_channel(p) and has_repos)
 
 
 def _today() -> str:
