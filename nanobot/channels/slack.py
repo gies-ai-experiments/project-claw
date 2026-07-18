@@ -3,7 +3,7 @@
 import asyncio
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 from loguru import logger
@@ -155,6 +155,7 @@ class SlackChannel(BaseChannel):
         self.config: SlackConfig = config
         self._web_client: AsyncWebClient | None = None
         self._socket_client: SocketModeClient | None = None
+        self._ready = asyncio.Event()
         self._bot_user_id: str | None = None
         self._target_cache: dict[str, str] = {}
         self._thread_context_attempted: set[str] = set()
@@ -163,11 +164,25 @@ class SlackChannel(BaseChannel):
         self._thinking: dict[str, str] = {}
         # Optional handler for approval-style button clicks (value starts "mtg-"),
         # wired at boot. When set, such clicks route here instead of the agent loop.
-        self._approval_callback: Any = None
+        self._approval_callback: (
+            Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]] | None
+        ) = None
 
-    def set_approval_callback(self, cb: Any) -> None:
-        """Route button clicks whose value starts 'mtg-' to `cb(sender_id, value)`."""
+    @property
+    def web_client(self) -> AsyncWebClient | None:
+        """Return the Web API client after Slack startup."""
+        return self._web_client
+
+    def set_approval_callback(
+        self,
+        cb: Callable[[dict[str, Any]], Awaitable[dict[str, Any] | None]],
+    ) -> None:
+        """Route raw meeting interaction payloads to the approval coordinator."""
         self._approval_callback = cb
+
+    async def wait_until_ready(self, timeout_s: float) -> None:
+        """Wait until Socket Mode has connected successfully."""
+        await asyncio.wait_for(self._ready.wait(), timeout=timeout_s)
 
     async def start(self) -> None:
         """Start the Slack Socket Mode client."""
@@ -214,6 +229,7 @@ class SlackChannel(BaseChannel):
             raise RuntimeError("Slack Socket Mode WebSocket connect timed out") from None
 
         self.logger.info("Slack Socket Mode WebSocket connected (events enabled)")
+        self._ready.set()
 
         while self._running:
             await asyncio.sleep(1)
@@ -221,6 +237,7 @@ class SlackChannel(BaseChannel):
     async def stop(self) -> None:
         """Stop the Slack client."""
         self._running = False
+        self._ready.clear()
         if self._socket_client:
             try:
                 await self._socket_client.close()
@@ -485,7 +502,7 @@ class SlackChannel(BaseChannel):
     ) -> None:
         """Handle incoming Socket Mode requests."""
         if req.type == "interactive":
-            await self._on_block_action(client, req)
+            await self._on_interactive(client, req)
             return
         if req.type != "events_api":
             return
@@ -684,10 +701,34 @@ class SlackChannel(BaseChannel):
         preview = response.content[:256].lstrip().lower()
         return preview.startswith(_HTML_DOWNLOAD_PREFIXES)
 
-    async def _on_block_action(self, client: SocketModeClient, req: SocketModeRequest) -> None:
-        """Handle button clicks from inline action buttons."""
-        await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
+    async def _on_interactive(
+        self, client: SocketModeClient, req: SocketModeRequest
+    ) -> None:
+        """Acknowledge and route Block Kit actions and modal submissions."""
         payload = req.payload or {}
+        interaction_type = str(payload.get("type") or "")
+
+        if interaction_type == "view_submission":
+            callback_id = str(((payload.get("view") or {}).get("callback_id")) or "")
+            response_payload: dict[str, Any] | None = None
+            if self._approval_callback is not None and callback_id.startswith("mtg2-"):
+                try:
+                    response_payload = await self._approval_callback(payload)
+                except Exception:
+                    self.logger.exception("approval callback failed")
+            await client.send_socket_mode_response(
+                SocketModeResponse(
+                    envelope_id=req.envelope_id,
+                    payload=response_payload,
+                )
+            )
+            return
+
+        await client.send_socket_mode_response(
+            SocketModeResponse(envelope_id=req.envelope_id)
+        )
+        if interaction_type != "block_actions":
+            return
         actions = payload.get("actions") or []
         if not actions:
             return
@@ -696,15 +737,15 @@ class SlackChannel(BaseChannel):
         sender_id = str(user_info.get("id") or "")
         channel_info = payload.get("channel") or {}
         chat_id = str(channel_info.get("id") or "")
-        if not sender_id or not chat_id or not value:
-            return
         # Approval buttons (meeting classifier) route to their own handler, not
         # the agent loop. The handler enforces its own admin check.
-        if self._approval_callback is not None and value.startswith("mtg-"):
+        if self._approval_callback is not None and value.startswith(("mtg-", "mtg2:")):
             try:
-                await self._approval_callback(sender_id, value)
+                await self._approval_callback(payload)
             except Exception:
                 self.logger.exception("approval callback failed")
+            return
+        if not sender_id or not chat_id or not value:
             return
         message_info = payload.get("message") or {}
         thread_ts = message_info.get("thread_ts") or message_info.get("ts")

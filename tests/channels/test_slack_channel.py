@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -974,3 +975,80 @@ async def test_thinking_message_can_be_disabled() -> None:
 
     assert all(c["text"] != channel.config.thinking_text for c in fake.chat_post_calls)
     assert channel._thinking == {}
+
+
+def _interactive_req(payload: dict, envelope_id: str = "env-interactive"):
+    return SimpleNamespace(type="interactive", envelope_id=envelope_id, payload=payload)
+
+
+@pytest.mark.asyncio
+async def test_mtg2_block_action_acks_before_raw_callback() -> None:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    order: list[str] = []
+
+    async def callback(payload):
+        order.append("callback")
+        assert payload["actions"][0]["value"].startswith("mtg2:")
+        return None
+
+    async def ack(_response):
+        order.append("ack")
+
+    channel.set_approval_callback(callback)
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=ack)
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "actions": [{"value": "mtg2:approve:00000000-0000-0000-0000-000000000001:0:-"}],
+    }
+    await channel._on_socket_request(client, _interactive_req(payload))
+    assert order == ["ack", "callback"]
+    channel._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mtg2_view_submission_acks_with_callback_response() -> None:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    callback = AsyncMock(return_value={"response_action": "errors", "errors": {"title": "Required"}})
+    channel.set_approval_callback(callback)
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+    payload = {
+        "type": "view_submission",
+        "user": {"id": "U1"},
+        "view": {"callback_id": "mtg2-task", "state": {"values": {}}},
+    }
+    await channel._on_socket_request(client, _interactive_req(payload))
+    callback.assert_awaited_once_with(payload)
+    response = client.send_socket_mode_response.await_args.args[0]
+    assert response.payload["response_action"] == "errors"
+
+
+@pytest.mark.asyncio
+async def test_non_meeting_button_retains_agent_fallback() -> None:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+    client = SimpleNamespace(send_socket_mode_response=AsyncMock())
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "message": {"ts": "1.0"},
+        "actions": [{"value": "ordinary-button"}],
+    }
+    await channel._on_socket_request(client, _interactive_req(payload))
+    channel._handle_message.assert_awaited_once()
+    assert channel._handle_message.await_args.kwargs["content"] == "ordinary-button"
+
+
+@pytest.mark.asyncio
+async def test_readiness_and_web_client_lifecycle() -> None:
+    channel = SlackChannel(SlackConfig(enabled=True), MessageBus())
+    assert channel.web_client is None
+    with pytest.raises(asyncio.TimeoutError):
+        await channel.wait_until_ready(0.001)
+    channel._ready.set()
+    await channel.wait_until_ready(0.01)
+    await channel.stop()
+    assert not channel._ready.is_set()

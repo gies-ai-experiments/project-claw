@@ -27,7 +27,9 @@ oauth_config:
     bot:
       - app_mentions:read    # receive app_mention events
       - channels:history     # read public channel messages for thread context
+      - channels:manage      # create permanent public project channels
       - channels:read        # list channels (resolve name → ID)
+      - channels:write.invites # invite approved project participants
       - chat:write           # post replies
       - files:read           # download files the user attaches
       - groups:history       # private channel messages
@@ -40,6 +42,7 @@ oauth_config:
       - mpim:write           # open group DMs
       - reactions:write      # add :eyes: on receive, :white_check_mark: on reply
       - users:read           # resolve @handle → user ID
+      - users:read.email     # map meeting participants by exact email
 
 settings:
   event_subscriptions:
