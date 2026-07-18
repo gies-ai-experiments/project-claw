@@ -117,6 +117,7 @@ async def test_apply_migrations_creates_asana_sync_storage(pg_schema):
         "lifecycle_status",
         "source",
         "created_by_slack_id",
+        "channel_slug",
         "created_at",
         "updated_at",
     } <= registry_columns
@@ -149,7 +150,7 @@ async def test_asana_sync_constraints_enforce_registry_and_lead_invariants(pg_sc
     )
     assert index is not None
     assert "WHERE (role = 'lead'::text)" in index["indexdef"]
-    assert await conn.fetchval("SELECT MAX(version) FROM schema_version") == 6
+    assert await conn.fetchval("SELECT MAX(version) FROM schema_version") == 7
 
     await conn.execute("INSERT INTO project_registry (project_id) VALUES ('atlas')")
     row = await conn.fetchrow(

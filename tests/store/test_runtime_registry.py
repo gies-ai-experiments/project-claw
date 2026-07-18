@@ -101,6 +101,7 @@ async def test_registry_reserves_activates_and_loads_dynamic_project(pg_schema):
     assert reserved["source"] == "runtime"
     assert reserved["lifecycle_status"] == "provisioning"
     assert reserved["lead_email"] == "lead@example.edu"
+    assert reserved["channel_slug"] == "new-lab"
 
     project = Project(name="new-lab", asana={"projectGid": "asana-22"})
     await registry.activate_dynamic(project, "C22", "asana-22")
@@ -122,6 +123,42 @@ async def test_registry_reserves_activates_and_loads_dynamic_project(pg_schema):
         )
         == "needs_attention"
     )
+
+
+@pytest.mark.asyncio
+async def test_reservation_rejects_channel_slug_collision_and_records_participants(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    registry = RuntimeProjectRegistry(conn)
+    first = ProjectDraft(
+        project="new-lab",
+        is_new_project=True,
+        display_name="New Lab",
+        description="Research",
+        channel_slug="shared-lab",
+        lead=PersonRef(name="Lead", email="lead@example.edu"),
+        tasks=[{
+            "id": "t1",
+            "title": "Ship",
+            "owner": {"name": "Ash", "email": "ash@example.edu"},
+            "collaborators": [{"name": "Jordan", "email": "jordan@example.edu"}],
+        }],
+    )
+    await registry.reserve_new_project(first, "U1")
+    collision = first.model_copy(
+        update={"project": "other-lab", "display_name": "Other Lab"}
+    )
+    with pytest.raises(ValueError, match="channel slug"):
+        await registry.reserve_new_project(collision, "U1")
+
+    memberships = await conn.fetch(
+        "SELECT email_normalized, role FROM project_membership ORDER BY email_normalized"
+    )
+    assert [dict(row) for row in memberships] == [
+        {"email_normalized": "ash@example.edu", "role": "participant"},
+        {"email_normalized": "jordan@example.edu", "role": "participant"},
+        {"email_normalized": "lead@example.edu", "role": "lead"},
+    ]
 
 
 @pytest.mark.asyncio

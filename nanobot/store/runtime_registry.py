@@ -106,57 +106,87 @@ class RuntimeProjectRegistry:
         lead_email = draft.lead.email.strip().lower()
         async with _acquire(self._database) as conn:
             async with conn.transaction():
-                result = await conn.execute(
-                    """
-                    INSERT INTO project_registry
-                      (project_id, display_name, description, lead_email, lifecycle_status,
-                       source, created_by_slack_id, updated_at)
-                    VALUES ($1, $2, $3, $4, 'provisioning', 'runtime', $5, now())
-                    ON CONFLICT (project_id) DO UPDATE SET
-                      display_name=EXCLUDED.display_name,
-                      description=EXCLUDED.description,
-                      lead_email=EXCLUDED.lead_email,
-                      lifecycle_status='provisioning',
-                      created_by_slack_id=EXCLUDED.created_by_slack_id,
-                      updated_at=now()
-                    WHERE project_registry.source='runtime'
-                    """,
+                existing = await conn.fetchrow(
+                    "SELECT * FROM project_registry WHERE project_id=$1 FOR UPDATE",
                     draft.project,
-                    draft.display_name,
-                    draft.description,
-                    lead_email,
-                    approver_slack_id,
                 )
-                if result == "INSERT 0 0":
+                if existing is not None and existing["source"] != "runtime":
                     raise ValueError("project ID is already owned by static configuration")
-                current_lead = await conn.fetchval(
-                    """
-                    SELECT email_normalized FROM project_membership
-                    WHERE project_id=$1 AND role='lead'
-                    """,
-                    draft.project,
-                )
-                if current_lead is not None and current_lead != lead_email:
+                if (
+                    existing is not None
+                    and existing["lead_email"] is not None
+                    and existing["lead_email"] != lead_email
+                ):
                     raise ValueError("project already has a different lead")
-                await conn.execute(
+                slug_owner = await conn.fetchval(
                     """
-                    INSERT INTO identity_directory (email_normalized, display_name)
-                    VALUES ($1, $2)
-                    ON CONFLICT (email_normalized) DO UPDATE
-                      SET display_name=EXCLUDED.display_name
+                    SELECT project_id FROM project_registry
+                    WHERE channel_slug=$1 AND project_id<>$2
                     """,
-                    lead_email,
-                    draft.lead.name,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO project_membership (project_id, email_normalized, role)
-                    VALUES ($1, $2, 'lead')
-                    ON CONFLICT (project_id, email_normalized) DO UPDATE SET role='lead'
-                    """,
+                    draft.channel_slug,
                     draft.project,
-                    lead_email,
                 )
+                if slug_owner is not None:
+                    raise ValueError("Slack channel slug is already reserved")
+                if existing is None:
+                    await conn.execute(
+                        """
+                        INSERT INTO project_registry
+                          (project_id, display_name, description, lead_email, channel_slug,
+                           lifecycle_status, source, created_by_slack_id, updated_at)
+                        VALUES ($1, $2, $3, $4, $5, 'provisioning', 'runtime', $6, now())
+                        """,
+                        draft.project,
+                        draft.display_name,
+                        draft.description,
+                        lead_email,
+                        draft.channel_slug,
+                        approver_slack_id,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE project_registry SET
+                          display_name=$2, description=$3, lead_email=$4, channel_slug=$5,
+                          lifecycle_status=CASE WHEN lifecycle_status='active' THEN 'active'
+                                                ELSE 'provisioning' END,
+                          created_by_slack_id=$6, updated_at=now()
+                        WHERE project_id=$1
+                        """,
+                        draft.project,
+                        draft.display_name,
+                        draft.description,
+                        lead_email,
+                        draft.channel_slug,
+                        approver_slack_id,
+                    )
+
+                members = {lead_email: (draft.lead.name, "lead")}
+                for task in draft.tasks:
+                    for person in ([task.owner] if task.owner else []) + task.collaborators:
+                        members.setdefault(person.email, (person.name, "participant"))
+                for email, (display_name, role) in members.items():
+                    await conn.execute(
+                        """
+                        INSERT INTO identity_directory (email_normalized, display_name)
+                        VALUES ($1, $2)
+                        ON CONFLICT (email_normalized) DO UPDATE
+                          SET display_name=EXCLUDED.display_name
+                        """,
+                        email,
+                        display_name,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO project_membership (project_id, email_normalized, role)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (project_id, email_normalized) DO UPDATE
+                          SET role=EXCLUDED.role
+                        """,
+                        draft.project,
+                        email,
+                        role,
+                    )
 
     async def activate_dynamic(
         self, project: Project, channel_id: str, asana_project_gid: str
