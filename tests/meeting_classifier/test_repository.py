@@ -191,6 +191,13 @@ async def test_provisioning_lifecycle_and_safe_failure_storage(pg_schema):
 
     claimed = await repo.claim_next_job()
     assert claimed is not None and claimed.id == job_id and claimed.status == "running"
+    await repo.ensure_step(job_id, "900:announcement", "approval:n1:announcement")
+    steps = {step.step_name: step for step in await repo.list_steps(job_id)}
+    assert steps["900:announcement"].status == "pending"
+    await repo.mark_step_running(job_id, "900:announcement")
+    assert {
+        step.step_name: step.status for step in await repo.list_steps(job_id)
+    }["900:announcement"] == "running"
     await repo.complete_step(job_id, "000:project", "P1")
     await repo.fail_step(job_id, "001:task:t1", "safe diagnostic", permanent=False)
     retry_at = datetime.now(timezone.utc) + timedelta(minutes=2)
@@ -199,6 +206,7 @@ async def test_provisioning_lifecycle_and_safe_failure_storage(pg_schema):
     await conn.execute("UPDATE provisioning_job SET retry_at=now() - interval '1 second'")
     assert (await repo.claim_next_job()).id == job_id
     await repo.complete_step(job_id, "001:task:t1", "T1")
+    await repo.complete_step(job_id, "900:announcement", "10.1")
     await repo.complete_job(job_id)
     assert (
         await conn.fetchval("SELECT status FROM meeting_approval WHERE id=$1", approval.id)

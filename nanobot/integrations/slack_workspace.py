@@ -26,6 +26,7 @@ class SlackResource:
     channel_id: str
     name: str
     marker: str = ""
+    timestamp: str = ""
 
     @property
     def resource_id(self) -> str:
@@ -316,6 +317,41 @@ class SlackWorkspaceClient:
     async def open_modal(self, trigger_id: str, view: dict) -> None:
         client = self._client()
         await self._call("views.open", client.views_open, trigger_id=trigger_id, view=view)
+
+    async def find_message_by_marker(
+        self, channel_id: str, marker: str
+    ) -> SlackResource | None:
+        canonical = _canonical_marker(marker)
+        client = self._client()
+        cursor = ""
+        matches: list[SlackResource] = []
+        while True:
+            response = await self._call(
+                "conversations.history",
+                client.conversations_history,
+                channel=channel_id,
+                limit=200,
+                cursor=cursor,
+            )
+            for message in response.get("messages") or []:
+                lines = {line.strip() for line in str(message.get("text") or "").splitlines()}
+                if canonical in lines:
+                    matches.append(
+                        SlackResource(
+                            channel_id=channel_id,
+                            name="message",
+                            marker=canonical,
+                            timestamp=str(message.get("ts") or ""),
+                        )
+                    )
+            cursor = str(
+                ((response.get("response_metadata") or {}).get("next_cursor") or "")
+            ).strip()
+            if not cursor:
+                break
+        if len(matches) > 1:
+            raise SlackAmbiguousError(operation="conversations.history")
+        return matches[0] if matches else None
 
 
 def _normalize_email(email: str) -> str:

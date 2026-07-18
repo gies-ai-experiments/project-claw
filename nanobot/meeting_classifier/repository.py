@@ -52,6 +52,13 @@ class ProvisioningJob:
     status: str
 
 
+@dataclass(frozen=True)
+class ProvisioningStep:
+    step_name: str
+    status: str
+    external_id: str | None
+
+
 def _normalize_email(email: str) -> str:
     normalized = email.strip().lower()
     if not normalized:
@@ -371,6 +378,47 @@ class ProvisioningRepository:
             job_id,
         )
         return _snapshot(value)
+
+    async def list_steps(self, job_id: UUID) -> list[ProvisioningStep]:
+        rows = await self._conn.fetch(
+            """
+            SELECT step_name, status, external_id
+            FROM provisioning_step
+            WHERE job_id=$1
+            ORDER BY step_name
+            """,
+            job_id,
+        )
+        return [
+            ProvisioningStep(row["step_name"], row["status"], row["external_id"])
+            for row in rows
+        ]
+
+    async def ensure_step(self, job_id: UUID, step_name: str, idempotency_key: str) -> None:
+        await self._conn.execute(
+            """
+            INSERT INTO provisioning_step
+              (job_id, step_name, status, idempotency_key)
+            VALUES ($1, $2, 'pending', $3)
+            ON CONFLICT (job_id, step_name) DO NOTHING
+            """,
+            job_id,
+            step_name,
+            idempotency_key,
+        )
+
+    async def mark_step_running(self, job_id: UUID, step_name: str) -> None:
+        result = await self._conn.execute(
+            """
+            UPDATE provisioning_step
+            SET status='running', updated_at=now()
+            WHERE job_id=$1 AND step_name=$2 AND status IN ('pending', 'running')
+            """,
+            job_id,
+            step_name,
+        )
+        if result == "UPDATE 0":
+            raise ValueError("unknown or completed provisioning step")
 
     async def complete_step(self, job_id: UUID, step_name: str, external_id: str | None) -> None:
         result = await self._conn.execute(

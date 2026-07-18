@@ -18,6 +18,7 @@ class FakeSlackClient:
         self.channel_pages: list[dict] = []
         self.calls: list[tuple[str, dict]] = []
         self.create_error: Exception | None = None
+        self.history_pages: list[dict] = []
 
     async def users_list(self, **kwargs):
         self.calls.append(("users_list", kwargs))
@@ -56,6 +57,10 @@ class FakeSlackClient:
     async def views_open(self, **kwargs):
         self.calls.append(("views_open", kwargs))
         return {"ok": True}
+
+    async def conversations_history(self, **kwargs):
+        self.calls.append(("conversations_history", kwargs))
+        return self.history_pages.pop(0)
 
 
 @pytest.mark.asyncio
@@ -166,3 +171,20 @@ async def test_missing_client_and_unknown_invitee_are_safe_permanent_errors() ->
     fake.user_pages = [{"members": [], "response_metadata": {"next_cursor": ""}}]
     with pytest.raises(SlackPermanentError, match="workspace user"):
         await SlackWorkspaceClient(lambda: fake).invite_users("C1", ["U404"])
+
+
+@pytest.mark.asyncio
+async def test_message_reconciliation_uses_exact_marker_line() -> None:
+    fake = FakeSlackClient()
+    fake.history_pages = [{
+        "messages": [
+            {"ts": "1.0", "text": "done\nprojectclaw:approval:a10:slack"},
+            {"ts": "2.0", "text": "done\nprojectclaw:approval:a1:slack"},
+        ],
+        "response_metadata": {"next_cursor": ""},
+    }]
+    found = await SlackWorkspaceClient(lambda: fake).find_message_by_marker(
+        "C1", "projectclaw:approval:a1:slack"
+    )
+    assert found is not None
+    assert found.timestamp == "2.0"
