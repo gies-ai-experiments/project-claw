@@ -107,6 +107,7 @@ exp/
 
 # Agent harness state (never tracked)
 .claude/
+.superpowers/
 
 # Illinois Azure / Disruption Lab skills — internal infra details, keep out of this public repo
 /azure/
