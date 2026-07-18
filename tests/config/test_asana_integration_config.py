@@ -100,6 +100,30 @@ def test_database_and_asana_secrets_are_not_exposed_by_repr_or_validation_errors
     assert dsn not in error_text
     assert access_token not in error_text
     assert "input_value=" not in error_text
+    structured_errors = repr(exc_info.value.errors())
+    assert dsn not in structured_errors
+    assert access_token not in structured_errors
+    assert exc_info.value.errors()[0]["loc"] == ()
+    assert "integrations.asana.team_gid" in exc_info.value.errors()[0]["msg"]
+
+
+def test_direct_config_construction_redacts_environment_secrets_from_errors(monkeypatch):
+    dsn = "postgresql://environment-sentinel-dsn"
+    access_token = "environment-sentinel-access-token"
+    monkeypatch.setenv("NANOBOT_DATABASE__DSN", dsn)
+    monkeypatch.setenv("NANOBOT_INTEGRATIONS__ASANA__ENABLED", "true")
+    monkeypatch.setenv("NANOBOT_INTEGRATIONS__ASANA__ACCESS_TOKEN", access_token)
+    monkeypatch.setenv("NANOBOT_INTEGRATIONS__ASANA__WORKSPACE_GID", " ")
+    monkeypatch.setenv("NANOBOT_INTEGRATIONS__ASANA__TEAM_GID", "t1")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Config()
+
+    structured_errors = repr(exc_info.value.errors())
+    assert dsn not in structured_errors
+    assert access_token not in structured_errors
+    assert exc_info.value.errors()[0]["loc"] == ()
+    assert "integrations.asana.workspace_gid" in exc_info.value.errors()[0]["msg"]
 
 
 @pytest.mark.parametrize(

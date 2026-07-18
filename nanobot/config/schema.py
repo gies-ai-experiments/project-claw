@@ -4,7 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
 
@@ -490,6 +497,15 @@ class IntegrationsConfig(Base):
     asana: AsanaIntegrationConfig = Field(default_factory=AsanaIntegrationConfig)
 
 
+def _without_validation_inputs(error: ValidationError) -> ValidationError:
+    """Rebuild a validation error without retaining potentially secret inputs."""
+    return ValidationError.from_exception_data(
+        error.title,
+        error.errors(include_url=False, include_input=False),
+        hide_input=True,
+    )
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -506,6 +522,37 @@ class Config(BaseSettings):
         default_factory=dict,
         validation_alias=AliasChoices("modelPresets", "model_presets"),
     )
+
+    def __init__(self, **data: Any) -> None:
+        try:
+            super().__init__(**data)
+        except ValidationError as error:
+            raise _without_validation_inputs(error) from None
+
+    @classmethod
+    def model_validate(
+        cls,
+        obj: Any,
+        *,
+        strict: bool | None = None,
+        extra: Any = None,
+        from_attributes: bool | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> "Config":
+        try:
+            return super().model_validate(
+                obj,
+                strict=strict,
+                extra=extra,
+                from_attributes=from_attributes,
+                context=context,
+                by_alias=by_alias,
+                by_name=by_name,
+            )
+        except ValidationError as error:
+            raise _without_validation_inputs(error) from None
 
     @model_validator(mode="after")
     def _validate_model_preset(self) -> "Config":
