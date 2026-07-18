@@ -73,7 +73,10 @@ def parse_structured_classification(
             draft = ProjectDraft.model_validate(item)
         except (ValidationError, TypeError):
             continue
-        if draft.project in known_projects or draft.is_new_project:
+        is_known_project = draft.project in known_projects
+        if (is_known_project and not draft.is_new_project) or (
+            not is_known_project and draft.is_new_project
+        ):
             drafts.append(draft)
     return drafts
 

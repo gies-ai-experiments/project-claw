@@ -93,6 +93,26 @@ def test_parser_accepts_existing_and_new_project_drafts():
     assert drafts[1].is_new_project is True
 
 
+def test_structured_parser_enforces_mutually_exclusive_project_admission():
+    raw = """[
+      {"project":"atlas","isNewProject":false,"tasks":[]},
+      {"project":"atlas","isNewProject":true,"displayName":"Duplicate Atlas",
+       "description":"Should not create a known project","channelSlug":"atlas-copy",
+       "lead":{"name":"Lead","email":"lead@example.edu"},"tasks":[]},
+      {"project":"new-lab","isNewProject":true,"displayName":"New Lab",
+       "description":"A genuinely new project","channelSlug":"new-lab",
+       "lead":{"name":"Lead","email":"lead@example.edu"},"tasks":[]},
+      {"project":"ghost","isNewProject":false,"tasks":[]}
+    ]"""
+
+    drafts = parse_structured_classification(raw, {"atlas"})
+
+    assert [(draft.project, draft.is_new_project) for draft in drafts] == [
+        ("atlas", False),
+        ("new-lab", True),
+    ]
+
+
 def test_structured_parser_strips_one_optional_fence():
     raw = '```json\n[{"project":"atlas","tasks":[]}]\n```'
     assert parse_structured_classification(raw, KNOWN)[0].project == "atlas"
