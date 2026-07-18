@@ -54,7 +54,11 @@ class RuntimeProjectRegistry:
                         ON CONFLICT (project_id) DO UPDATE SET
                           display_name = EXCLUDED.display_name,
                           description = EXCLUDED.description,
-                          lead_email = EXCLUDED.lead_email,
+                          lead_email = CASE
+                            WHEN project_registry.source = 'static_config'
+                              THEN EXCLUDED.lead_email
+                            ELSE project_registry.lead_email
+                          END,
                           github_repos = EXCLUDED.github_repos,
                           granola_folder_id = EXCLUDED.granola_folder_id,
                           allowed_channels = EXCLUDED.allowed_channels,

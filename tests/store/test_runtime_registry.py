@@ -33,6 +33,56 @@ async def test_static_seed_preserves_dynamic_external_ids(pg_schema):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("static_lead", ["different@example.edu", ""])
+async def test_static_seed_preserves_runtime_lead_and_membership(pg_schema, static_lead):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    registry = RuntimeProjectRegistry(conn)
+    draft = ProjectDraft(
+        project="new-lab",
+        is_new_project=True,
+        display_name="New Lab",
+        description="Runtime description",
+        channel_slug="new-lab",
+        lead=PersonRef(name="Runtime Lead", email="runtime-lead@example.edu"),
+    )
+    await registry.reserve_new_project(draft, "UAPPROVER")
+    await registry.activate_dynamic(
+        Project(name="new-lab", asana={"projectGid": "asana-runtime"}),
+        "CRUNTIME",
+        "asana-runtime",
+    )
+
+    static = SlackConfig.model_validate(
+        {
+            "projects": {
+                "new-lab": {
+                    "name": "Static Display",
+                    "github": {"repos": ["org/static-lab"]},
+                    "leadEmail": static_lead,
+                    "description": "Static description",
+                }
+            }
+        }
+    )
+    await registry.seed_static(static)
+
+    row = await conn.fetchrow("SELECT * FROM project_registry WHERE project_id='new-lab'")
+    assert row["lead_email"] == "runtime-lead@example.edu"
+    assert row["source"] == "runtime"
+    assert row["slack_channel_id"] == "CRUNTIME"
+    assert row["asana_project_gid"] == "asana-runtime"
+    assert row["github_repos"] == ["org/static-lab"]
+    assert row["display_name"] == "Static Display"
+    assert row["description"] == "Static description"
+    membership = await conn.fetchrow(
+        "SELECT * FROM project_membership WHERE project_id='new-lab'"
+    )
+    assert membership["email_normalized"] == "runtime-lead@example.edu"
+    assert membership["role"] == "lead"
+
+
+@pytest.mark.asyncio
 async def test_registry_reserves_activates_and_loads_dynamic_project(pg_schema):
     schema, conn = pg_schema
     await apply_migrations(conn, schema=schema)
@@ -113,6 +163,18 @@ async def test_reservation_creates_one_lead_and_preserves_verified_identity(pg_s
     )
     with pytest.raises(ValueError, match="different lead"):
         await registry.reserve_new_project(conflicting, "UAPPROVER")
+    registry_row = await conn.fetchrow(
+        "SELECT lead_email FROM project_registry WHERE project_id='new-lab'"
+    )
+    assert registry_row["lead_email"] == "lead@example.edu"
+    assert await conn.fetchval(
+        "SELECT COUNT(*) FROM identity_directory WHERE email_normalized='other@example.edu'"
+    ) == 0
+    assert await conn.fetchval("SELECT COUNT(*) FROM identity_directory") == 1
+    membership = await conn.fetchrow(
+        "SELECT email_normalized, role FROM project_membership WHERE project_id='new-lab'"
+    )
+    assert dict(membership) == {"email_normalized": "lead@example.edu", "role": "lead"}
 
 
 @pytest.mark.asyncio

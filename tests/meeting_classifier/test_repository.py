@@ -132,6 +132,37 @@ async def test_approve_and_enqueue_rolls_back_partial_failure(pg_schema):
 
 
 @pytest.mark.asyncio
+async def test_pool_approve_and_enqueue_rolls_back_partial_failure(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+
+    async def setup(pool_conn):
+        await pool_conn.execute(f'SET search_path TO "{schema}", public')
+
+    pool = await asyncpg.create_pool(
+        os.environ["PROJECTCLAW_TEST_PG_DSN"], min_size=1, max_size=2, setup=setup
+    )
+    try:
+        repo = ApprovalRepository(pool)
+        approval = await repo.create_draft(
+            "pool-rollback", "Sync", date(2026, 7, 17), _draft()
+        )
+        await pool.execute(
+            "ALTER TABLE provisioning_step ADD CONSTRAINT reject_pool_steps CHECK (false)"
+        )
+
+        with pytest.raises(asyncpg.CheckViolationError):
+            await repo.approve_and_enqueue(approval.id, 0, "U_SAKSHI")
+
+        row = await pool.fetchrow("SELECT * FROM meeting_approval WHERE id=$1", approval.id)
+        assert row["status"] == "pending"
+        assert row["approved_snapshot"] is None
+        assert await pool.fetchval("SELECT COUNT(*) FROM provisioning_job") == 0
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
 async def test_approved_snapshot_is_immutable(pg_schema):
     schema, conn = pg_schema
     await apply_migrations(conn, schema=schema)
