@@ -466,14 +466,14 @@ class MemoryConfig(Base):
 class DatabaseConfig(Base):
     """General database connection shared by database-backed features."""
 
-    dsn: str | None = None
+    dsn: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class AsanaIntegrationConfig(Base):
     """Global Asana integration settings."""
 
     enabled: bool = False
-    access_token: str = ""
+    access_token: str = Field(default="", exclude=True, repr=False)
     workspace_gid: str = ""
     team_gid: str = ""
     base_url: str = "https://app.asana.com/api/1.0"
@@ -523,12 +523,12 @@ class Config(BaseSettings):
     def _validate_database_integrations(self) -> "Config":
         asana = self.integrations.asana
         if asana.enabled:
-            if not self.database.dsn:
+            if not self.database.dsn or not self.database.dsn.strip():
                 raise ValueError("integrations.asana.enabled requires database.dsn")
             missing = [
                 name
                 for name in ("access_token", "workspace_gid", "team_gid")
-                if not getattr(asana, name)
+                if not getattr(asana, name).strip()
             ]
             if missing:
                 fields = ", ".join(f"integrations.asana.{name}" for name in missing)
@@ -680,7 +680,11 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
-    model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")
+    model_config = ConfigDict(
+        env_prefix="NANOBOT_",
+        env_nested_delimiter="__",
+        hide_input_in_errors=True,
+    )
 
 
 def _resolve_tool_config_refs() -> None:

@@ -1,6 +1,9 @@
+import json
+
 import pytest
 from pydantic import ValidationError
 
+from nanobot.config.loader import save_config
 from nanobot.config.schema import Config, Project
 
 
@@ -44,3 +47,84 @@ def test_two_different_dsns_are_rejected():
             "database": {"dsn": "postgresql://db/one"},
             "memory": {"dsn": "postgresql://db/two"},
         })
+
+
+def test_database_and_asana_secrets_are_not_serialized(tmp_path):
+    config_path = tmp_path / "config.json"
+    cfg = Config.model_validate({
+        "database": {"dsn": "postgresql://sentinel-dsn"},
+        "integrations": {"asana": {
+            "enabled": True,
+            "accessToken": "sentinel-access-token",
+            "workspaceGid": "w1",
+            "teamGid": "t1",
+        }},
+    })
+
+    dumped = cfg.model_dump(mode="json", by_alias=True)
+    assert "dsn" not in dumped["database"]
+    assert "accessToken" not in dumped["integrations"]["asana"]
+
+    save_config(cfg, config_path)
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "dsn" not in saved["database"]
+    assert "accessToken" not in saved["integrations"]["asana"]
+
+
+def test_database_and_asana_secrets_are_not_exposed_by_repr_or_validation_errors():
+    dsn = "postgresql://sentinel-dsn"
+    access_token = "sentinel-access-token"
+    cfg = Config.model_validate({
+        "database": {"dsn": dsn},
+        "integrations": {"asana": {
+            "enabled": True,
+            "accessToken": access_token,
+            "workspaceGid": "w1",
+            "teamGid": "t1",
+        }},
+    })
+    assert dsn not in repr(cfg)
+    assert access_token not in repr(cfg)
+
+    with pytest.raises(ValidationError) as exc_info:
+        Config.model_validate({
+            "database": {"dsn": dsn},
+            "integrations": {"asana": {
+                "enabled": True,
+                "accessToken": access_token,
+                "workspaceGid": "w1",
+                "teamGid": " ",
+            }},
+        })
+    error_text = str(exc_info.value)
+    assert dsn not in error_text
+    assert access_token not in error_text
+    assert "input_value=" not in error_text
+
+
+@pytest.mark.parametrize(
+    ("field", "diagnostic"),
+    [
+        ("database.dsn", "database.dsn"),
+        ("accessToken", "integrations.asana.access_token"),
+        ("workspaceGid", "integrations.asana.workspace_gid"),
+        ("teamGid", "integrations.asana.team_gid"),
+    ],
+)
+def test_asana_rejects_whitespace_only_required_fields(field, diagnostic):
+    data = {
+        "database": {"dsn": "postgresql://db/projectclaw"},
+        "integrations": {"asana": {
+            "enabled": True,
+            "accessToken": "secret",
+            "workspaceGid": "w1",
+            "teamGid": "t1",
+        }},
+    }
+    if field == "database.dsn":
+        data["database"]["dsn"] = " \t "
+    else:
+        data["integrations"]["asana"][field] = " \t "
+
+    with pytest.raises(ValidationError, match=diagnostic):
+        Config.model_validate(data)
