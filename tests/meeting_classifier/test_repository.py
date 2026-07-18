@@ -93,9 +93,12 @@ async def test_approve_and_enqueue_is_atomic_and_idempotent(pg_schema):
 
     snapshot, job_id = await repo.approve_and_enqueue(approval.id, 0, "U_SAKSHI")
     assert snapshot.revision == 0
-    assert await conn.fetchval(
-        "SELECT COUNT(*) FROM provisioning_job WHERE approval_id=$1", approval.id
-    ) == 1
+    assert (
+        await conn.fetchval(
+            "SELECT COUNT(*) FROM provisioning_job WHERE approval_id=$1", approval.id
+        )
+        == 1
+    )
     steps = await conn.fetch(
         "SELECT step_name, idempotency_key FROM provisioning_step "
         "WHERE job_id=$1 ORDER BY step_name",
@@ -166,7 +169,10 @@ async def test_provisioning_lifecycle_and_safe_failure_storage(pg_schema):
     assert (await repo.claim_next_job()).id == job_id
     await repo.complete_step(job_id, "001:task:t1", "T1")
     await repo.complete_job(job_id)
-    assert await conn.fetchval("SELECT status FROM meeting_approval WHERE id=$1", approval.id) == "complete"
+    assert (
+        await conn.fetchval("SELECT status FROM meeting_approval WHERE id=$1", approval.id)
+        == "complete"
+    )
 
 
 @pytest.mark.asyncio
@@ -191,3 +197,129 @@ async def test_concurrent_workers_claim_distinct_jobs(pg_schema):
         await second.close()
     assert None not in claims
     assert claims[0].id != claims[1].id
+
+
+@pytest.mark.asyncio
+async def test_pool_transactions_and_crash_recovery_preserve_completed_work(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+
+    async def setup(pool_conn):
+        await pool_conn.execute(f'SET search_path TO "{schema}", public')
+
+    pool = await asyncpg.create_pool(
+        os.environ["PROJECTCLAW_TEST_PG_DSN"], min_size=1, max_size=3, setup=setup
+    )
+    try:
+        approvals = ApprovalRepository(pool)
+        approval = await approvals.create_draft("pool-note", "Sync", date(2026, 7, 17), _draft())
+        _, job_id = await approvals.approve_and_enqueue(approval.id, 0, "U1")
+        provisioning = ProvisioningRepository(pool)
+        assert (await provisioning.claim_next_job()).id == job_id
+        await provisioning.complete_step(job_id, "001:task:t1", "TASK-EXTERNAL")
+        await provisioning.fail_step(
+            job_id,
+            "000:project",
+            "temporary safe diagnostic",
+            permanent=False,
+        )
+        await pool.execute(
+            "UPDATE provisioning_step SET status='running' "
+            "WHERE job_id=$1 AND step_name='000:project'",
+            job_id,
+        )
+
+        assert await provisioning.recover_running_jobs() == 1
+        rows = await pool.fetch(
+            "SELECT step_name, status, external_id, attempt_count FROM provisioning_step "
+            "WHERE job_id=$1 ORDER BY step_name",
+            job_id,
+        )
+        assert dict(rows[0]) == {
+            "step_name": "000:project",
+            "status": "pending",
+            "external_id": None,
+            "attempt_count": 1,
+        }
+        assert dict(rows[1]) == {
+            "step_name": "001:task:t1",
+            "status": "complete",
+            "external_id": "TASK-EXTERNAL",
+            "attempt_count": 1,
+        }
+        assert (await provisioning.claim_next_job()).id == job_id
+        await provisioning.complete_step(job_id, "000:project", "PROJECT-EXTERNAL")
+        await provisioning.complete_job(job_id)
+        assert (
+            await pool.fetchval("SELECT status FROM meeting_approval WHERE id=$1", approval.id)
+            == "complete"
+        )
+
+        permanent = await approvals.create_draft(
+            "pool-note-permanent",
+            "Sync",
+            date(2026, 7, 17),
+            _draft("atlas-permanent"),
+        )
+        _, permanent_job_id = await approvals.approve_and_enqueue(permanent.id, 0, "U1")
+        assert (await provisioning.claim_next_job()).id == permanent_job_id
+        await provisioning.fail_step(
+            permanent_job_id,
+            "000:project",
+            "safe permanent diagnostic",
+            permanent=True,
+        )
+        assert await pool.fetchval(
+            "SELECT status FROM provisioning_job WHERE id=$1", permanent_job_id
+        ) == "needs_attention"
+        assert await pool.fetchval(
+            "SELECT status FROM meeting_approval WHERE id=$1", permanent.id
+        ) == "needs_attention"
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_failure_storage_redacts_obvious_secret_forms(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    approvals = ApprovalRepository(conn)
+    approval = await approvals.create_draft("secrets", "Sync", date(2026, 7, 17), _draft())
+    _, job_id = await approvals.approve_and_enqueue(approval.id, 0, "U1")
+    provisioning = ProvisioningRepository(conn)
+    sentinels = [
+        "AUTH_SENTINEL_12345678901234567890",
+        "BEARER_SHORT_SENTINEL",
+        "COOKIE_SENTINEL_123456789012345678",
+        "JSON_SENTINEL_12345678901234567890",
+        "ASSIGN_SENTINEL_123456789012345678",
+        "DB_DSN_SENTINEL_123456789012345678",
+        "HTTP_DSN_SENTINEL_1234567890123456",
+        "PEM_SENTINEL_123456789012345678901",
+        "OPAQUE_SENTINEL_123456789012345678901234567890",
+    ]
+    raw = "\n".join(
+        [
+            "request rejected safely",
+            f"Authorization: Bearer {sentinels[0]}",
+            f"Bearer {sentinels[1]}",
+            f"Cookie: session={sentinels[2]}",
+            f'{{"access_token": "{sentinels[3]}"}}',
+            f"api_key={sentinels[4]}",
+            f"postgresql://user:{sentinels[5]}@db.example/test",
+            f"https://user:{sentinels[6]}@service.example/path",
+            "-----BEGIN PRIVATE KEY-----\n" + sentinels[7] + "\n-----END PRIVATE KEY-----",
+            sentinels[8],
+        ]
+    )
+
+    await provisioning.fail_step(job_id, "000:project", raw, permanent=False)
+    persisted = await conn.fetchval(
+        "SELECT last_error FROM provisioning_step WHERE job_id=$1 AND step_name='000:project'",
+        job_id,
+    )
+    assert "request rejected safely" in persisted
+    assert "[redacted]" in persisted
+    assert len(persisted) <= 1000
+    for sentinel in sentinels:
+        assert sentinel not in persisted

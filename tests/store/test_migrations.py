@@ -1,6 +1,8 @@
 """Tests for the migration runner and schema."""
+
 from __future__ import annotations
 
+import asyncpg
 import pytest
 
 from nanobot.store.migrations import apply_migrations
@@ -133,3 +135,43 @@ async def test_apply_migrations_creates_asana_sync_storage(pg_schema):
         "provisioning_job",
         "provisioning_step",
     } <= tables
+
+
+@pytest.mark.asyncio
+async def test_asana_sync_constraints_enforce_registry_and_lead_invariants(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+
+    index = await conn.fetchrow(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname=$1 "
+        "AND indexname='project_membership_one_lead'",
+        schema,
+    )
+    assert index is not None
+    assert "WHERE (role = 'lead'::text)" in index["indexdef"]
+    assert await conn.fetchval("SELECT MAX(version) FROM schema_version") == 6
+
+    await conn.execute("INSERT INTO project_registry (project_id) VALUES ('atlas')")
+    row = await conn.fetchrow(
+        "SELECT lifecycle_status, source FROM project_registry WHERE project_id='atlas'"
+    )
+    assert dict(row) == {"lifecycle_status": "active", "source": "static_config"}
+    await conn.executemany(
+        "INSERT INTO identity_directory (email_normalized, display_name) VALUES ($1, $2)",
+        [("one@example.edu", "One"), ("two@example.edu", "Two")],
+    )
+    await conn.execute("INSERT INTO project_membership VALUES ('atlas', 'one@example.edu', 'lead')")
+    with pytest.raises(asyncpg.UniqueViolationError, match="project_membership_one_lead"):
+        await conn.execute(
+            "INSERT INTO project_membership VALUES ('atlas', 'two@example.edu', 'lead')"
+        )
+    with pytest.raises(asyncpg.CheckViolationError, match="project_membership_role_check"):
+        await conn.execute(
+            "INSERT INTO project_membership VALUES ('atlas', 'two@example.edu', 'owner')"
+        )
+    with pytest.raises(
+        asyncpg.ForeignKeyViolationError, match="project_membership_project_id_fkey"
+    ):
+        await conn.execute(
+            "INSERT INTO project_membership VALUES ('missing', 'two@example.edu', 'participant')"
+        )

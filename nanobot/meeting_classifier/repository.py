@@ -1,8 +1,10 @@
 """PostgreSQL repositories for meeting approvals and provisioning."""
+
 from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
@@ -11,6 +13,17 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from nanobot.meeting_classifier.models import ApprovalSnapshot, ProjectDraft
+
+Database = asyncpg.Connection | asyncpg.Pool
+
+
+@asynccontextmanager
+async def _acquire(database: Database):
+    if isinstance(database, asyncpg.Pool):
+        async with database.acquire() as conn:
+            yield conn
+    else:
+        yield database
 
 
 @dataclass(frozen=True)
@@ -73,7 +86,7 @@ def _snapshot(row_value: object) -> ApprovalSnapshot:
 
 
 class IdentityRepository:
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: Database) -> None:
         self._conn = conn
 
     async def get(self, email: str) -> IdentityRecord | None:
@@ -118,7 +131,7 @@ class IdentityRepository:
 
 
 class ApprovalRepository:
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: Database) -> None:
         self._conn = conn
 
     async def create_draft(
@@ -148,9 +161,7 @@ class ApprovalRepository:
         return _approval_record(row)
 
     async def get(self, approval_id: UUID) -> ApprovalRecord | None:
-        row = await self._conn.fetchrow(
-            "SELECT * FROM meeting_approval WHERE id=$1", approval_id
-        )
+        row = await self._conn.fetchrow("SELECT * FROM meeting_approval WHERE id=$1", approval_id)
         return None if row is None else _approval_record(row)
 
     async def replace_draft(
@@ -190,124 +201,149 @@ class ApprovalRepository:
         expected_revision: int,
         approver_slack_id: str,
     ) -> tuple[ApprovalSnapshot, UUID]:
-        async with self._conn.transaction():
-            row = await self._conn.fetchrow(
-                "SELECT * FROM meeting_approval WHERE id=$1 FOR UPDATE", approval_id
-            )
-            if row is None:
-                raise ValueError("unknown approval")
-            if row["revision"] != expected_revision:
-                raise ValueError("stale approval revision")
-            if row["status"] != "pending":
-                existing_job = await self._conn.fetchrow(
-                    "SELECT id FROM provisioning_job WHERE approval_id=$1", approval_id
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM meeting_approval WHERE id=$1 FOR UPDATE", approval_id
                 )
-                if row["approved_snapshot"] is not None and existing_job is not None:
-                    return _snapshot(row["approved_snapshot"]), existing_job["id"]
-                raise ValueError("approval is no longer pending")
+                if row is None:
+                    raise ValueError("unknown approval")
+                if row["revision"] != expected_revision:
+                    raise ValueError("stale approval revision")
+                if row["status"] != "pending":
+                    existing_job = await conn.fetchrow(
+                        "SELECT id FROM provisioning_job WHERE approval_id=$1", approval_id
+                    )
+                    if row["approved_snapshot"] is not None and existing_job is not None:
+                        return _snapshot(row["approved_snapshot"]), existing_job["id"]
+                    raise ValueError("approval is no longer pending")
 
-            draft = ProjectDraft.model_validate(_json_value(row["draft"]))
-            snapshot = ApprovalSnapshot(
-                approval_id=approval_id,
-                note_id=row["note_id"],
-                meeting_title=row["meeting_title"],
-                meeting_date=row["meeting_date"],
-                revision=row["revision"],
-                draft=draft,
-            )
-            snapshot_json = snapshot.model_dump_json(by_alias=True)
-            job_id = uuid4()
-            kind = "new_project" if draft.is_new_project else "existing_project"
-            await self._conn.execute(
-                """
+                draft = ProjectDraft.model_validate(_json_value(row["draft"]))
+                snapshot = ApprovalSnapshot(
+                    approval_id=approval_id,
+                    note_id=row["note_id"],
+                    meeting_title=row["meeting_title"],
+                    meeting_date=row["meeting_date"],
+                    revision=row["revision"],
+                    draft=draft,
+                )
+                snapshot_json = snapshot.model_dump_json(by_alias=True)
+                job_id = uuid4()
+                kind = "new_project" if draft.is_new_project else "existing_project"
+                await conn.execute(
+                    """
                 UPDATE meeting_approval SET
                   status='provisioning', approved_snapshot=$2::jsonb,
                   approver_slack_id=$3, approved_at=now(), updated_at=now()
                 WHERE id=$1
                 """,
-                approval_id,
-                snapshot_json,
-                approver_slack_id,
-            )
-            await self._conn.execute(
-                """
+                    approval_id,
+                    snapshot_json,
+                    approver_slack_id,
+                )
+                await conn.execute(
+                    """
                 INSERT INTO provisioning_job (id, approval_id, kind, status)
                 VALUES ($1, $2, $3, 'pending')
                 """,
-                job_id,
-                approval_id,
-                kind,
-            )
-            steps = [("000:project", f"approval:{approval_id}:project")]
-            steps.extend(
-                (
-                    f"{index:03d}:task:{task.id}",
-                    f"approval:{approval_id}:task:{task.id}",
+                    job_id,
+                    approval_id,
+                    kind,
                 )
-                for index, task in enumerate(draft.tasks, start=1)
-            )
-            await self._conn.executemany(
-                """
+                steps = [("000:project", f"approval:{approval_id}:project")]
+                steps.extend(
+                    (
+                        f"{index:03d}:task:{task.id}",
+                        f"approval:{approval_id}:task:{task.id}",
+                    )
+                    for index, task in enumerate(draft.tasks, start=1)
+                )
+                await conn.executemany(
+                    """
                 INSERT INTO provisioning_step
                   (job_id, step_name, status, idempotency_key)
                 VALUES ($1, $2, 'pending', $3)
                 """,
-                [(job_id, step_name, key) for step_name, key in steps],
-            )
-            return snapshot, job_id
+                    [(job_id, step_name, key) for step_name, key in steps],
+                )
+                return snapshot, job_id
 
 
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)bearer\s+\S+"),
-    re.compile(r"(?i)(?:access[_ -]?token|api[_ -]?key|secret|password)\s*[:=]\s*\S+"),
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+_SECRET_HEADER = re.compile(
+    r"^(authorization|proxy-authorization|cookie|set-cookie)\s*:\s*.*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_BEARER_CREDENTIAL = re.compile(r"\bbearer\s+[^\s,;]+", re.IGNORECASE)
+_URL_USERINFO = re.compile(r"\b([a-z][a-z0-9+.-]*://)([^@\s/]+)@", re.IGNORECASE)
+_SECRET_ASSIGNMENT = re.compile(
+    r"""(?ix)
+    (["']?(?:access[_-]?token|refresh[_-]?token|api[_-]?key|token|secret|password)["']?
+    \s*[:=]\s*)
+    (?:"[^"]*"|'[^']*'|[^,\s}\]]+)
+    """,
+)
+_OPAQUE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9._~+/=_-])"
+    r"(?=[A-Za-z0-9._~+/=_-]{32,})(?=[A-Za-z0-9._~+/=_-]*[A-Za-z])"
+    r"(?=[A-Za-z0-9._~+/=_-]*[0-9])[A-Za-z0-9._~+/=_-]{32,}"
+    r"(?![A-Za-z0-9._~+/=_-])"
 )
 
 
 def _sanitize_error(value: str) -> str:
     safe = value.replace("\x00", " ")
-    for pattern in _SECRET_PATTERNS:
-        safe = pattern.sub("[redacted]", safe)
+    safe = _PRIVATE_KEY.sub("[redacted private key]", safe)
+    safe = _SECRET_HEADER.sub(lambda match: f"{match.group(1)}: [redacted]", safe)
+    safe = _BEARER_CREDENTIAL.sub("Bearer [redacted]", safe)
+    safe = _URL_USERINFO.sub(r"\1[redacted]@", safe)
+    safe = _SECRET_ASSIGNMENT.sub(r"\1[redacted]", safe)
+    safe = _OPAQUE_TOKEN.sub("[redacted]", safe)
     return safe[:1000]
 
 
 class ProvisioningRepository:
-    def __init__(self, conn: asyncpg.Connection) -> None:
+    def __init__(self, conn: Database) -> None:
         self._conn = conn
 
     async def claim_next_job(self) -> ProvisioningJob | None:
-        async with self._conn.transaction():
-            row = await self._conn.fetchrow(
-                """
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
                 SELECT * FROM provisioning_job
                 WHERE status='pending' AND (retry_at IS NULL OR retry_at <= now())
                 ORDER BY created_at, id
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
                 """
-            )
-            if row is None:
-                return None
-            updated = await self._conn.fetchrow(
-                """
+                )
+                if row is None:
+                    return None
+                updated = await conn.fetchrow(
+                    """
                 UPDATE provisioning_job
                 SET status='running', retry_at=NULL, updated_at=now()
                 WHERE id=$1 RETURNING *
                 """,
-                row["id"],
-            )
-            await self._conn.execute(
-                """
+                    row["id"],
+                )
+                await conn.execute(
+                    """
                 UPDATE meeting_approval SET status='provisioning', updated_at=now()
                 WHERE id=$1
                 """,
-                row["approval_id"],
-            )
-            return ProvisioningJob(
-                id=updated["id"],
-                approval_id=updated["approval_id"],
-                kind=updated["kind"],
-                status=updated["status"],
-            )
+                    row["approval_id"],
+                )
+                return ProvisioningJob(
+                    id=updated["id"],
+                    approval_id=updated["approval_id"],
+                    kind=updated["kind"],
+                    status=updated["status"],
+                )
 
     async def get_snapshot(self, job_id: UUID) -> ApprovalSnapshot:
         value = await self._conn.fetchval(
@@ -320,9 +356,7 @@ class ProvisioningRepository:
         )
         return _snapshot(value)
 
-    async def complete_step(
-        self, job_id: UUID, step_name: str, external_id: str | None
-    ) -> None:
+    async def complete_step(self, job_id: UUID, step_name: str, external_id: str | None) -> None:
         result = await self._conn.execute(
             """
             UPDATE provisioning_step SET
@@ -343,63 +377,92 @@ class ProvisioningRepository:
         self, job_id: UUID, step_name: str, safe_error: str, permanent: bool
     ) -> None:
         status = "needs_attention" if permanent else "pending"
-        async with self._conn.transaction():
-            result = await self._conn.execute(
-                """
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                result = await conn.execute(
+                    """
                 UPDATE provisioning_step SET
                   status=$3, attempt_count=attempt_count+1, last_error=$4, updated_at=now()
                 WHERE job_id=$1 AND step_name=$2 AND status <> 'complete'
                 """,
-                job_id,
-                step_name,
-                status,
-                _sanitize_error(safe_error),
-            )
-            if result == "UPDATE 0":
-                raise ValueError("unknown or already completed provisioning step")
-            if permanent:
-                approval_id = await self._conn.fetchval(
-                    """
+                    job_id,
+                    step_name,
+                    status,
+                    _sanitize_error(safe_error),
+                )
+                if result == "UPDATE 0":
+                    raise ValueError("unknown or already completed provisioning step")
+                if permanent:
+                    approval_id = await conn.fetchval(
+                        """
                     UPDATE provisioning_job SET status='needs_attention', updated_at=now()
                     WHERE id=$1 RETURNING approval_id
                     """,
-                    job_id,
-                )
-                await self._conn.execute(
-                    """
+                        job_id,
+                    )
+                    await conn.execute(
+                        """
                     UPDATE meeting_approval SET status='needs_attention', updated_at=now()
                     WHERE id=$1
                     """,
-                    approval_id,
-                )
+                        approval_id,
+                    )
 
     async def complete_job(self, job_id: UUID) -> None:
-        async with self._conn.transaction():
-            incomplete = await self._conn.fetchval(
-                """
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                incomplete = await conn.fetchval(
+                    """
                 SELECT COUNT(*) FROM provisioning_step
                 WHERE job_id=$1 AND status <> 'complete'
                 """,
-                job_id,
-            )
-            if incomplete:
-                raise ValueError("cannot complete a job with incomplete steps")
-            approval_id = await self._conn.fetchval(
-                """
+                    job_id,
+                )
+                if incomplete:
+                    raise ValueError("cannot complete a job with incomplete steps")
+                approval_id = await conn.fetchval(
+                    """
                 UPDATE provisioning_job SET status='complete', retry_at=NULL, updated_at=now()
                 WHERE id=$1 RETURNING approval_id
                 """,
-                job_id,
-            )
-            if approval_id is None:
-                raise ValueError("unknown provisioning job")
-            await self._conn.execute(
-                """
+                    job_id,
+                )
+                if approval_id is None:
+                    raise ValueError("unknown provisioning job")
+                await conn.execute(
+                    """
                 UPDATE meeting_approval SET status='complete', updated_at=now()
                 WHERE id=$1
                 """,
-                approval_id,
-            )
+                    approval_id,
+                )
+
+    async def recover_running_jobs(self) -> int:
+        """Make work abandoned by this deployment's prior worker claimable again."""
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                job_ids = await conn.fetch(
+                    "SELECT id FROM provisioning_job WHERE status='running' FOR UPDATE"
+                )
+                if not job_ids:
+                    return 0
+                ids = [row["id"] for row in job_ids]
+                await conn.execute(
+                    """
+                    UPDATE provisioning_step SET status='pending', updated_at=now()
+                    WHERE job_id=ANY($1::uuid[]) AND status='running'
+                    """,
+                    ids,
+                )
+                await conn.execute(
+                    """
+                    UPDATE provisioning_job
+                    SET status='pending', retry_at=NULL, updated_at=now()
+                    WHERE id=ANY($1::uuid[])
+                    """,
+                    ids,
+                )
+                return len(ids)
 
     async def release_retryable_job(self, job_id: UUID, retry_at: datetime) -> None:
         result = await self._conn.execute(
