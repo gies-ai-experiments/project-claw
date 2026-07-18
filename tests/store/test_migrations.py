@@ -91,3 +91,45 @@ async def test_apply_migrations_is_idempotent(pg_schema):
     await apply_migrations(conn, schema=schema)
     versions = await conn.fetch("SELECT version FROM schema_version ORDER BY version")
     assert len(versions) == len({v["version"] for v in versions})
+
+
+@pytest.mark.asyncio
+async def test_apply_migrations_creates_asana_sync_storage(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+
+    registry_columns = {
+        row["column_name"]
+        for row in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=$1 AND table_name='project_registry'",
+            schema,
+        )
+    }
+    assert {
+        "display_name",
+        "description",
+        "lead_email",
+        "slack_channel_id",
+        "asana_project_gid",
+        "lifecycle_status",
+        "source",
+        "created_by_slack_id",
+        "created_at",
+        "updated_at",
+    } <= registry_columns
+
+    tables = {
+        row["table_name"]
+        for row in await conn.fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=$1",
+            schema,
+        )
+    }
+    assert {
+        "identity_directory",
+        "project_membership",
+        "meeting_approval",
+        "provisioning_job",
+        "provisioning_step",
+    } <= tables
