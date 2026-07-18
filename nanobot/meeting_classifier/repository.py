@@ -164,6 +164,22 @@ class ApprovalRepository:
         row = await self._conn.fetchrow("SELECT * FROM meeting_approval WHERE id=$1", approval_id)
         return None if row is None else _approval_record(row)
 
+    async def set_review_messages(
+        self, approval_id: UUID, channel_id: str, message_ts: list[str]
+    ) -> None:
+        result = await self._conn.execute(
+            """
+            UPDATE meeting_approval
+            SET review_channel_id=$2, review_message_ts=$3, updated_at=now()
+            WHERE id=$1 AND status='pending'
+            """,
+            approval_id,
+            channel_id,
+            message_ts,
+        )
+        if result == "UPDATE 0":
+            raise ValueError("approval is no longer pending")
+
     async def replace_draft(
         self, approval_id: UUID, draft: ProjectDraft, expected_revision: int
     ) -> ApprovalRecord:
@@ -476,3 +492,36 @@ class ProvisioningRepository:
         )
         if result == "UPDATE 0":
             raise ValueError("job is not running")
+
+    async def retry_needs_attention(self, approval_id: UUID) -> bool:
+        """Resume the same immutable snapshot after Sakshi explicitly retries."""
+        async with _acquire(self._conn) as conn:
+            async with conn.transaction():
+                job_id = await conn.fetchval(
+                    """
+                    UPDATE provisioning_job
+                    SET status='pending', retry_at=NULL, updated_at=now()
+                    WHERE approval_id=$1 AND status='needs_attention'
+                    RETURNING id
+                    """,
+                    approval_id,
+                )
+                if job_id is None:
+                    return False
+                await conn.execute(
+                    """
+                    UPDATE provisioning_step
+                    SET status='pending', last_error=NULL, updated_at=now()
+                    WHERE job_id=$1 AND status='needs_attention'
+                    """,
+                    job_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE meeting_approval
+                    SET status='provisioning', updated_at=now()
+                    WHERE id=$1
+                    """,
+                    approval_id,
+                )
+                return True

@@ -354,3 +354,34 @@ async def test_failure_storage_redacts_obvious_secret_forms(pg_schema):
     assert len(persisted) <= 1000
     for sentinel in sentinels:
         assert sentinel not in persisted
+
+
+@pytest.mark.asyncio
+async def test_review_delivery_and_explicit_retry_preserve_snapshot(pg_schema):
+    schema, conn = pg_schema
+    await apply_migrations(conn, schema=schema)
+    approvals = ApprovalRepository(conn)
+    provisioning = ProvisioningRepository(conn)
+    approval = await approvals.create_draft(
+        "n-review", "Review", date(2026, 7, 18), _draft()
+    )
+    await approvals.set_review_messages(approval.id, "D_SAKSHI", ["1.1", "1.2"])
+    row = await conn.fetchrow(
+        "SELECT review_channel_id, review_message_ts FROM meeting_approval WHERE id=$1",
+        approval.id,
+    )
+    assert row["review_channel_id"] == "D_SAKSHI"
+    assert row["review_message_ts"] == ["1.1", "1.2"]
+
+    snapshot, job_id = await approvals.approve_and_enqueue(approval.id, 0, "U_SAKSHI")
+    await provisioning.fail_step(job_id, "000:project", "safe failure", permanent=True)
+    assert await provisioning.retry_needs_attention(approval.id) is True
+    assert await provisioning.retry_needs_attention(approval.id) is False
+    assert await conn.fetchval(
+        "SELECT status FROM provisioning_job WHERE id=$1", job_id
+    ) == "pending"
+    assert await conn.fetchval(
+        "SELECT status FROM provisioning_step WHERE job_id=$1 AND step_name='000:project'",
+        job_id,
+    ) == "pending"
+    assert await provisioning.get_snapshot(job_id) == snapshot
