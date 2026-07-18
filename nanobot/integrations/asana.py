@@ -17,6 +17,14 @@ _SAFE_AMBIGUOUS = "Asana reconciliation was ambiguous."
 _RESOURCE_FIELDS = "gid,name,notes,permalink_url"
 
 
+class _ResponseDict(dict):
+    """A private dict-compatible response value retaining only safe status metadata."""
+
+    def __init__(self, value: dict, status_code: int) -> None:
+        super().__init__(value)
+        self.status_code = status_code
+
+
 @dataclass(frozen=True)
 class AsanaUser:
     """The identity fields used to join an Asana workspace user by email."""
@@ -129,6 +137,8 @@ class AsanaClient:
         params: dict | None = None,
     ) -> dict:
         operation = method.upper()
+        response: httpx.Response | None = None
+        transport_failed = False
         try:
             response = await self._client.request(
                 operation,
@@ -137,13 +147,18 @@ class AsanaClient:
                 params=params,
             )
         except httpx.TransportError:
+            transport_failed = True
+
+        if transport_failed:
             raise AsanaRetryableError(
                 _SAFE_REQUEST_ERROR,
                 operation=operation,
-            ) from None
+            )
+        if response is None:  # pragma: no cover - defensive type narrowing
+            raise AsanaRetryableError(_SAFE_REQUEST_ERROR, operation=operation)
 
         status_code = response.status_code
-        if status_code == 429 or status_code >= 500:
+        if status_code == 429 or 500 <= status_code < 600:
             raise AsanaRetryableError(
                 _SAFE_REQUEST_ERROR,
                 _retry_after(response.headers.get("Retry-After")),
@@ -157,21 +172,26 @@ class AsanaClient:
                 operation=operation,
             )
 
+        payload: Any = None
+        decoding_failed = False
         try:
             payload = response.json()
         except ValueError:
-            raise AsanaPermanentError(
-                status_code,
-                _SAFE_REQUEST_ERROR,
-                operation=operation,
-            ) from None
-        if not isinstance(payload, dict):
+            decoding_failed = True
+
+        if decoding_failed:
             raise AsanaPermanentError(
                 status_code,
                 _SAFE_REQUEST_ERROR,
                 operation=operation,
             )
-        return payload
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise AsanaPermanentError(
+                status_code,
+                _SAFE_REQUEST_ERROR,
+                operation=operation,
+            )
+        return _ResponseDict(payload, status_code)
 
     async def _paginate(self, path: str, *, params: dict[str, Any]) -> list[dict]:
         query = dict(params)
@@ -183,24 +203,41 @@ class AsanaClient:
             payload = await self._request("GET", path, params=query)
             page = payload.get("data")
             if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="GET")
-            resources.extend(page)
+                raise AsanaPermanentError(
+                    _response_status(payload),
+                    _SAFE_REQUEST_ERROR,
+                    operation="GET",
+                )
+            resources.extend(
+                _ResponseDict(item, _response_status(payload))
+                for item in page
+            )
 
             next_page = payload.get("next_page")
             if next_page is None:
                 return resources
             if not isinstance(next_page, dict):
-                raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="GET")
+                raise AsanaPermanentError(
+                    _response_status(payload),
+                    _SAFE_REQUEST_ERROR,
+                    operation="GET",
+                )
             offset = next_page.get("offset")
             if not isinstance(offset, str) or not offset or offset in seen_offsets:
-                raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="GET")
+                raise AsanaPermanentError(
+                    _response_status(payload),
+                    _SAFE_REQUEST_ERROR,
+                    operation="GET",
+                )
             seen_offsets.add(offset)
             query["offset"] = offset
 
     async def validate_connection(self) -> None:
         """Validate access to the one configured workspace and team."""
-        await self._request("GET", f"workspaces/{self._config.workspace_gid}")
-        await self._request("GET", f"teams/{self._config.team_gid}")
+        workspace = await self._request("GET", f"workspaces/{self._config.workspace_gid}")
+        _data_object(workspace)
+        team = await self._request("GET", f"teams/{self._config.team_gid}")
+        _data_object(team)
 
     async def resolve_user_by_email(self, email: str) -> AsanaUser:
         """Resolve exactly one workspace user by normalized exact email."""
@@ -263,7 +300,7 @@ class AsanaClient:
         matches: list[AsanaResource] = []
         for gid in candidate_gids:
             candidate = await self.get_project(gid)
-            if marker in candidate.notes:
+            if _has_marker(candidate.notes, marker):
                 matches.append(candidate)
         return _one_or_none(matches, operation="reconcile_project")
 
@@ -293,20 +330,42 @@ class AsanaClient:
 
     async def set_project_owner(self, project_gid: str, user_gid: str) -> None:
         """Assign the explicitly approved lead as project owner."""
-        await self._request(
+        payload = await self._request(
             "PUT",
             f"projects/{project_gid}",
             json={"data": {"owner": user_gid}},
         )
+        _data_object(payload)
 
     async def add_project_members(self, project_gid: str, user_gids: list[str]) -> None:
         """Add only the explicitly supplied workspace users to a project."""
         if not user_gids:
             return
-        await self._request(
+        payload = await self._request(
             "POST",
             f"projects/{project_gid}/addMembers",
             json={"data": {"members": list(user_gids)}},
+        )
+        _data_object(payload)
+
+    async def find_parent_task_by_marker(
+        self,
+        project_gid: str,
+        marker: str,
+    ) -> AsanaResource | None:
+        """Reconcile a parent task within its known project by an exact notes marker."""
+        _require_marker(marker)
+        tasks = await self._paginate(
+            "tasks",
+            params={
+                "project": project_gid,
+                "opt_fields": "gid,name",
+            },
+        )
+        return await self._reconcile_tasks(
+            tasks,
+            marker,
+            operation="reconcile_parent_task",
         )
 
     async def find_task_by_marker(
@@ -320,6 +379,19 @@ class AsanaClient:
             f"tasks/{parent_gid}/subtasks",
             params={"opt_fields": "gid,name"},
         )
+        return await self._reconcile_tasks(
+            tasks,
+            marker,
+            operation="reconcile_subtask",
+        )
+
+    async def _reconcile_tasks(
+        self,
+        tasks: list[dict],
+        marker: str,
+        *,
+        operation: str,
+    ) -> AsanaResource | None:
         candidate_gids: list[str] = []
         for task in tasks:
             gid = task.get("gid")
@@ -329,9 +401,9 @@ class AsanaClient:
         matches: list[AsanaResource] = []
         for gid in candidate_gids:
             candidate = await self._get_task(gid)
-            if marker in candidate.notes:
+            if _has_marker(candidate.notes, marker):
                 matches.append(candidate)
-        return _one_or_none(matches, operation="reconcile_task")
+        return _one_or_none(matches, operation=operation)
 
     async def create_parent_task(
         self,
@@ -387,11 +459,12 @@ class AsanaClient:
         """Add only explicitly approved collaborators as task followers."""
         if not user_gids:
             return
-        await self._request(
+        payload = await self._request(
             "POST",
             f"tasks/{task_gid}/addFollowers",
             json={"data": {"followers": list(user_gids)}},
         )
+        _data_object(payload)
 
     async def _get_task(self, task_gid: str) -> AsanaResource:
         payload = await self._request(
@@ -415,13 +488,18 @@ def _retry_after(value: str | None) -> float | None:
 
 
 def _require_marker(marker: str) -> None:
-    if not marker.strip():
+    if not marker or marker.strip() != marker or len(marker.splitlines()) != 1:
         raise ValueError("Asana provenance marker must not be blank.")
+
+
+def _has_marker(notes: str, marker: str) -> bool:
+    _require_marker(marker)
+    return marker in notes.splitlines()
 
 
 def _notes_with_marker(notes: str, marker: str) -> str:
     _require_marker(marker)
-    if marker in notes:
+    if _has_marker(notes, marker):
         return notes
     visible_notes = notes.rstrip()
     if not visible_notes:
@@ -429,11 +507,20 @@ def _notes_with_marker(notes: str, marker: str) -> str:
     return f"{visible_notes}\n\n{marker}"
 
 
+def _response_status(value: dict) -> int:
+    status_code = getattr(value, "status_code", 200)
+    return status_code if isinstance(status_code, int) else 200
+
+
 def _data_object(payload: dict) -> dict:
     data = payload.get("data")
     if not isinstance(data, dict):
-        raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="parse")
-    return data
+        raise AsanaPermanentError(
+            _response_status(payload),
+            _SAFE_REQUEST_ERROR,
+            operation="parse",
+        )
+    return _ResponseDict(data, _response_status(payload))
 
 
 def _as_user(data: dict) -> AsanaUser:
@@ -441,7 +528,11 @@ def _as_user(data: dict) -> AsanaUser:
     name = data.get("name")
     email = data.get("email")
     if not isinstance(gid, str) or not isinstance(name, str) or not isinstance(email, str):
-        raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="parse")
+        raise AsanaPermanentError(
+            _response_status(data),
+            _SAFE_REQUEST_ERROR,
+            operation="parse",
+        )
     return AsanaUser(gid=gid, name=name, email=email.strip().lower())
 
 
@@ -456,7 +547,11 @@ def _as_resource(data: dict) -> AsanaResource:
         or not isinstance(notes, str)
         or (permalink_url is not None and not isinstance(permalink_url, str))
     ):
-        raise AsanaPermanentError(200, _SAFE_REQUEST_ERROR, operation="parse")
+        raise AsanaPermanentError(
+            _response_status(data),
+            _SAFE_REQUEST_ERROR,
+            operation="parse",
+        )
     return AsanaResource(
         gid=gid,
         name=name,

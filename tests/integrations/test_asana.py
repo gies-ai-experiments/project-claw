@@ -54,6 +54,37 @@ def _client(
     return AsanaClient(config, transport=httpx.MockTransport(handler))
 
 
+def _assert_sanitized_exception(
+    error: BaseException,
+    *sentinels: str,
+) -> None:
+    """Inspect every observable exception surface and chained exception."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rendered = " ".join(
+            (
+                str(current),
+                repr(current),
+                repr(current.args),
+                repr(vars(current)),
+            )
+        )
+        for sentinel in sentinels:
+            assert sentinel not in rendered
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+
+    assert error.__context__ is None
+    assert error.__cause__ is None
+
+
 async def test_validate_connection_checks_configured_workspace_and_team(config):
     seen: list[tuple[str, str]] = []
 
@@ -218,6 +249,40 @@ async def test_create_project_is_private_and_includes_marker(config):
     assert project.gid == "project-1"
 
 
+async def test_create_project_appends_only_an_exact_standalone_marker(config):
+    seen: dict = {}
+    requested_marker = "projectclaw:approval:a1:task:t1"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content)["data"])
+        return httpx.Response(
+            201,
+            json={
+                "data": {
+                    "gid": "project-1",
+                    "name": "Atlas",
+                    "notes": seen["notes"],
+                }
+            },
+        )
+
+    client = _client(config, handler)
+    try:
+        await client.create_project(
+            name="Atlas",
+            notes="projectclaw:approval:a1:task:t10",
+            marker=requested_marker,
+        )
+    finally:
+        await client.aclose()
+
+    assert seen["notes"].splitlines() == [
+        "projectclaw:approval:a1:task:t10",
+        "",
+        requested_marker,
+    ]
+
+
 async def test_project_owner_and_membership_use_explicit_user_gids(config):
     seen: list[tuple[str, str, dict]] = []
 
@@ -328,6 +393,39 @@ async def test_find_project_returns_none_or_raises_when_marker_matches_are_not_u
                 await client.find_project_by_marker("Atlas", "safe marker")
     finally:
         await client.aclose()
+
+
+async def test_find_project_does_not_match_a_longer_marker_line(config):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/1.0/projects":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"gid": "project-1", "name": "Atlas"}],
+                    "next_page": None,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "gid": "project-1",
+                    "name": "Atlas",
+                    "notes": "projectclaw:approval:a1:task:t10",
+                }
+            },
+        )
+
+    client = _client(config, handler)
+    try:
+        project = await client.find_project_by_marker(
+            "Atlas",
+            "projectclaw:approval:a1:task:t1",
+        )
+    finally:
+        await client.aclose()
+
+    assert project is None
 
 
 async def test_create_parent_task_is_unassigned_and_records_snapshot_provenance(
@@ -509,6 +607,120 @@ async def test_find_task_rejects_ambiguous_markers(config):
         await client.aclose()
 
 
+async def test_find_task_does_not_match_a_longer_marker_line(config):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/subtasks"):
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"gid": "task-10", "name": "Ten"}],
+                    "next_page": None,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "gid": "task-10",
+                    "name": "Ten",
+                    "notes": "projectclaw:approval:a1:task:t10",
+                }
+            },
+        )
+
+    client = _client(config, handler)
+    try:
+        task = await client.find_task_by_marker(
+            "parent-1",
+            "projectclaw:approval:a1:task:t1",
+        )
+    finally:
+        await client.aclose()
+
+    assert task is None
+
+
+async def test_find_parent_task_paginates_project_tasks_and_requires_exact_marker(config):
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.path == "/api/1.0/tasks":
+            assert request.url.params["project"] == "project-1"
+            if "offset" not in request.url.params:
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [{"gid": "parent-10", "name": "Weekly sync"}],
+                        "next_page": {"offset": "next"},
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"gid": "parent-1", "name": "Weekly sync"}],
+                    "next_page": None,
+                },
+            )
+        gid = request.url.path.rsplit("/", 1)[-1]
+        marker = (
+            "projectclaw:approval:a1:parent"
+            if gid == "parent-1"
+            else "projectclaw:approval:a1:parent:old"
+        )
+        return httpx.Response(
+            200,
+            json={"data": {"gid": gid, "name": "Weekly sync", "notes": marker}},
+        )
+
+    client = _client(config, handler)
+    try:
+        parent = await client.find_parent_task_by_marker(
+            "project-1",
+            "projectclaw:approval:a1:parent",
+        )
+    finally:
+        await client.aclose()
+
+    assert parent is not None
+    assert parent.gid == "parent-1"
+    assert any("offset=next" in call for call in calls)
+
+
+@pytest.mark.parametrize("match_count", [0, 2])
+async def test_find_parent_task_returns_none_or_raises_for_non_unique_markers(
+    config,
+    match_count,
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/1.0/tasks":
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"gid": f"parent-{index}", "name": "Weekly sync"}
+                        for index in range(match_count)
+                    ],
+                    "next_page": None,
+                },
+            )
+        gid = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200,
+            json={"data": {"gid": gid, "name": "Weekly sync", "notes": "marker"}},
+        )
+
+    client = _client(config, handler)
+    try:
+        if match_count == 0:
+            assert await client.find_parent_task_by_marker("project-1", "marker") is None
+        else:
+            with pytest.raises(AsanaAmbiguousError):
+                await client.find_parent_task_by_marker("project-1", "marker")
+    finally:
+        await client.aclose()
+
+
 async def test_add_task_followers_uses_only_explicit_user_gids(config):
     seen: dict = {}
 
@@ -583,17 +795,38 @@ async def test_unauthorized_error_never_retains_headers_body_token_dsn_or_remote
         await client.aclose()
 
     error = caught.value
-    rendered = f"{error!s} {error!r} {error.args!r} {error.__dict__!r}"
     assert error.status_code == 401
     assert error.safe_message == "Asana request failed."
-    for sentinel in (
+    _assert_sanitized_exception(
+        error,
         "sentinel-asana-token",
         "sentinel-header-secret",
         body_secret,
         dsn_secret,
         "remote said",
-    ):
-        assert sentinel not in rendered
+    )
+
+
+async def test_malformed_json_error_has_no_raw_exception_context(config):
+    body_secret = "sentinel-malformed-json-body"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert "sentinel-asana-token" in request.headers["Authorization"]
+        return httpx.Response(200, content=f'{{"data": "{body_secret}"')
+
+    client = _client(config, handler)
+    try:
+        with pytest.raises(AsanaPermanentError) as caught:
+            await client.get_project("project-1")
+    finally:
+        await client.aclose()
+
+    assert caught.value.status_code == 200
+    _assert_sanitized_exception(
+        caught.value,
+        body_secret,
+        "sentinel-asana-token",
+    )
 
 
 @pytest.mark.parametrize(
@@ -605,6 +838,7 @@ async def test_unauthorized_error_never_retains_headers_body_token_dsn_or_remote
         (409, AsanaPermanentError),
         (500, AsanaRetryableError),
         (503, AsanaRetryableError),
+        (600, AsanaPermanentError),
     ],
 )
 async def test_non_success_statuses_have_safe_deterministic_classification(
@@ -666,10 +900,94 @@ async def test_timeout_is_retryable_and_next_attempt_can_reconcile_created_proje
     finally:
         await client.aclose()
 
-    assert "sentinel" not in str(caught.value)
+    _assert_sanitized_exception(caught.value, "sentinel", "sentinel-asana-token")
     assert attempts == 1
     assert reconciled is not None
     assert reconciled.gid == "created-remotely"
+
+
+async def test_timeout_after_parent_create_reconciles_before_duplicate_retry(config, snapshot):
+    marker = "projectclaw:approval:a1:parent"
+    posts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "POST":
+            posts += 1
+            raise httpx.ReadTimeout(
+                "sentinel parent timeout sentinel-asana-token",
+                request=request,
+            )
+        if request.url.path == "/api/1.0/tasks":
+            assert request.url.params["project"] == "project-1"
+            return httpx.Response(
+                200,
+                json={
+                    "data": [{"gid": "parent-created-remotely", "name": "Weekly sync"}],
+                    "next_page": None,
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "gid": "parent-created-remotely",
+                    "name": "Weekly sync — 2026-07-18",
+                    "notes": f"Summary\n\n{marker}",
+                }
+            },
+        )
+
+    client = _client(config, handler)
+    try:
+        with pytest.raises(AsanaRetryableError) as caught:
+            await client.create_parent_task("project-1", snapshot, marker)
+        reconciled = await client.find_parent_task_by_marker("project-1", marker)
+    finally:
+        await client.aclose()
+
+    _assert_sanitized_exception(caught.value, "sentinel", "sentinel-asana-token")
+    assert posts == 1
+    assert reconciled is not None
+    assert reconciled.gid == "parent-created-remotely"
+
+
+@pytest.mark.parametrize(
+    "operation,status_code,response",
+    [
+        ("read", 200, {"unexpected": {}}),
+        ("create", 201, {"data": []}),
+        ("void", 200, {"data": None}),
+        ("void_empty", 204, None),
+    ],
+)
+async def test_malformed_success_envelopes_are_sanitized_with_actual_status(
+    config,
+    operation,
+    status_code,
+    response,
+):
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        if response is None:
+            return httpx.Response(status_code, content=b"")
+        return httpx.Response(status_code, json=response)
+
+    client = _client(config, handler)
+    try:
+        with pytest.raises(AsanaPermanentError) as caught:
+            if operation == "read":
+                await client.get_project("project-1")
+            elif operation == "create":
+                await client.create_project(name="Atlas", notes="Research", marker="marker")
+            elif operation == "void":
+                await client.set_project_owner("project-1", "user-1")
+            else:
+                await client.add_task_followers("task-1", ["user-1"])
+    finally:
+        await client.aclose()
+
+    assert caught.value.status_code == status_code
+    _assert_sanitized_exception(caught.value, "sentinel-asana-token")
 
 
 async def test_aclose_closes_the_reusable_http_client(config):
