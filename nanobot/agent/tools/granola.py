@@ -12,6 +12,8 @@ surface "couldn't reach Granola" inline rather than aborting the turn.
 from __future__ import annotations
 
 import json
+import random
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -36,6 +38,10 @@ class GranolaToolConfig(Base):
     api_key: str = ""
     base_url: str = _DEFAULT_BASE_URL
     timeout: int = _DEFAULT_TIMEOUT_S
+    # Test-only: when > 0, _granola_get returns this many generated gibberish
+    # meetings instead of calling the real API, so the meeting pipeline can be
+    # driven without real Granola notes. Off (0) in production.
+    fake_meetings: int = 0
 
 
 def _format_http_error(resp: httpx.Response) -> str:
@@ -45,12 +51,63 @@ def _format_http_error(resp: httpx.Response) -> str:
     return f"Granola API error: HTTP {resp.status_code} — {body}"
 
 
+# -------- fake meeting source (test-only; toggled by tools.granola.fakeMeetings) --------
+# ponytail: a gibberish generator behind the single Granola read seam, so the
+# meeting-classifier pipeline can be exercised without real Granola notes. The
+# batch is generated once and cached, so the poller (which dedups by note id)
+# processes each fake meeting exactly once and then goes quiet.
+_FAKE_NOTES: dict[str, dict[str, Any]] | None = None
+_FAKE_WORDS = (
+    "sync roadmap retro latency budget onboarding metrics rollout backlog cadence "
+    "sprint blockers staging incident handoff scope demo intake velocity refactor "
+    "prototype telemetry migration outage regression cutover baseline standup"
+).split()
+
+
+def _fake_words(n: int) -> str:
+    return " ".join(random.choice(_FAKE_WORDS) for _ in range(n))
+
+
+def _make_fake_notes(count: int, folder_id: str) -> dict[str, dict[str, Any]]:
+    now = datetime.now(timezone.utc).isoformat()
+    notes: dict[str, dict[str, Any]] = {}
+    for _ in range(max(1, count)):
+        nid = "not_fake_" + random.randbytes(6).hex()
+        people = [w.title() for w in _fake_words(2).split()]
+        notes[nid] = {
+            "id": nid,
+            "title": _fake_words(4).title(),
+            "summary": _fake_words(20),
+            "transcript": ". ".join(_fake_words(12) for _ in range(6)),
+            "attendees": [{"name": p, "email": p.lower() + "@example.com"} for p in people],
+            "folder_id": folder_id,
+            "created_at": now,
+        }
+    return notes
+
+
+def _fake_granola(path: str, params: dict[str, Any] | None, count: int) -> dict[str, Any]:
+    global _FAKE_NOTES
+    if _FAKE_NOTES is None:
+        _FAKE_NOTES = _make_fake_notes(count, (params or {}).get("folder_id", ""))
+    if path == "/notes":
+        return {"notes": list(_FAKE_NOTES.values())}
+    if path.startswith("/notes/"):
+        note = _FAKE_NOTES.get(path[len("/notes/") :])
+        return note if note is not None else {"id": "", "title": "", "transcript": ""}
+    if path == "/folders":
+        return {"folders": []}
+    return {"notes": []}
+
+
 async def _granola_get(
     cfg: GranolaToolConfig,
     path: str,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any] | str:
     """GET against the Granola API. Returns parsed JSON on 2xx, error string otherwise."""
+    if cfg.fake_meetings:
+        return _fake_granola(path, params, cfg.fake_meetings)
     if not cfg.api_key:
         return "Granola API error: api_key is not configured"
     url = f"{cfg.base_url.rstrip('/')}{path}"
