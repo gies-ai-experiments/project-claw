@@ -72,6 +72,8 @@ class SafeFileHistory(FileHistory):
 
     def store_string(self, string: str) -> None:
         super().store_string(_sanitize_surrogates(string))
+
+
 from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
 from nanobot.config.paths import get_workspace_path, is_default_workspace
 from nanobot.config.schema import Config
@@ -202,10 +204,9 @@ def _response_renderable(content: str, render_markdown: bool, metadata: dict | N
 
 async def _print_interactive_line(text: str) -> None:
     """Print async interactive updates with prompt_toolkit-safe Rich styling."""
+
     def _write() -> None:
-        ansi = _render_interactive_ansi(
-            lambda c: c.print(f"  [dim]↳ {text}[/dim]")
-        )
+        ansi = _render_interactive_ansi(lambda c: c.print(f"  [dim]↳ {text}[/dim]"))
         print_formatted_text(ANSI(ansi), end="")
 
     await run_in_terminal(_write)
@@ -217,6 +218,7 @@ async def _print_interactive_response(
     metadata: dict | None = None,
 ) -> None:
     """Print async interactive replies with prompt_toolkit-safe Rich styling."""
+
     def _write() -> None:
         content = response or ""
         ansi = _render_interactive_ansi(
@@ -232,12 +234,16 @@ async def _print_interactive_response(
     await run_in_terminal(_write)
 
 
-def _print_cli_progress_line(text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None) -> None:
+def _print_cli_progress_line(
+    text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None
+) -> None:
     """Print a CLI progress line, pausing the spinner if needed."""
     if not text.strip():
         return
     target = renderer.console if renderer else console
-    pause = renderer.pause_spinner() if renderer else (thinking.pause() if thinking else nullcontext())
+    pause = (
+        renderer.pause_spinner() if renderer else (thinking.pause() if thinking else nullcontext())
+    )
     with pause:
         if renderer:
             renderer.ensure_header()
@@ -273,12 +279,16 @@ class _ReasoningBuffer:
         )
 
 
-def _print_cli_reasoning(text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None) -> None:
+def _print_cli_reasoning(
+    text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None
+) -> None:
     """Print reasoning/thinking content in a distinct style."""
     if not text.strip():
         return
     target = renderer.console if renderer else console
-    pause = renderer.pause_spinner() if renderer else (thinking.pause() if thinking else nullcontext())
+    pause = (
+        renderer.pause_spinner() if renderer else (thinking.pause() if thinking else nullcontext())
+    )
     with pause:
         if renderer:
             renderer.ensure_header()
@@ -295,7 +305,9 @@ def _flush_cli_reasoning(
         _print_cli_reasoning(text, thinking, renderer)
 
 
-async def _print_interactive_progress_line(text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None) -> None:
+async def _print_interactive_progress_line(
+    text: str, thinking: ThinkingSpinner | None, renderer: StreamRenderer | None = None
+) -> None:
     """Print an interactive progress line, pausing the spinner if needed."""
     if not text.strip():
         return
@@ -383,9 +395,7 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    version: bool = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True
-    ),
+    version: bool = typer.Option(None, "--version", "-v", callback=version_callback, is_eager=True),
 ):
     """nanobot - Personal AI Assistant."""
     pass
@@ -624,9 +634,7 @@ def provision_channels_cmd(
         for chan_id, pc in slack.project_channels.items()
         for name in pc.allowed_projects
     }
-    rows = _asyncio.run(
-        provision_channels(web, list(slack.projects.values()), existing, dry_run)
-    )
+    rows = _asyncio.run(provision_channels(web, list(slack.projects.values()), existing, dry_run))
     for r in rows:
         console.print(r)
     console.print("[yellow]Bake channel_id values into config projects/projectChannels.[/yellow]")
@@ -636,7 +644,9 @@ def provision_channels_cmd(
 def serve(
     port: int | None = typer.Option(None, "--port", "-p", help="API server port"),
     host: str | None = typer.Option(None, "--host", "-H", help="Bind address"),
-    timeout: float | None = typer.Option(None, "--timeout", "-t", help="Per-request timeout (seconds)"),
+    timeout: float | None = typer.Option(
+        None, "--timeout", "-t", help="Per-request timeout (seconds)"
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show nanobot runtime logs"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
@@ -670,7 +680,8 @@ def serve(
     session_manager = SessionManager(runtime_config.workspace_path)
     try:
         agent_loop = AgentLoop.from_config(
-            runtime_config, bus,
+            runtime_config,
+            bus,
             session_manager=session_manager,
             image_generation_provider_configs=image_gen_provider_configs(runtime_config),
         )
@@ -743,9 +754,8 @@ async def _setup_agent_memory(agent: AgentLoop, config: Config, pool: Any) -> No
     try:
         from nanobot.channels.project_resolver import ProjectResolver
         from nanobot.store.message_store import MessageStore
-        agent.attach_memory(
-            MessageStore(pool), ProjectResolver(pool), config.memory.inject_limit
-        )
+
+        agent.attach_memory(MessageStore(pool), ProjectResolver(pool), config.memory.inject_limit)
         logger.info("project-context-db memory active (dsn configured)")
 
         if config.memory.distiller_active:
@@ -841,7 +851,8 @@ def _run_gateway(
 
     # Create agent with cron service
     agent = AgentLoop.from_config(
-        config, bus,
+        config,
+        bus,
         provider=provider_snapshot.provider,
         model=provider_snapshot.model,
         context_window_tokens=provider_snapshot.context_window_tokens,
@@ -868,7 +879,10 @@ def _run_gateway(
         )
 
     async def _deliver_to_channel(
-        msg: OutboundMessage, *, record: bool = False, session_key: str | None = None,
+        msg: OutboundMessage,
+        *,
+        record: bool = False,
+        session_key: str | None = None,
     ) -> None:
         """Publish a user-visible message and mirror it into that channel's session."""
         metadata = dict(msg.metadata or {})
@@ -975,12 +989,19 @@ def _run_gateway(
 
         response = resp.content if resp else ""
 
-        if job.payload.deliver and isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
+        if (
+            job.payload.deliver
+            and isinstance(message_tool, MessageTool)
+            and message_tool._sent_in_turn
+        ):
             return response
 
         if job.payload.deliver and job.payload.to and response:
             should_notify = await evaluate_response(
-                response, reminder_note, agent.provider, agent.model,
+                response,
+                reminder_note,
+                agent.provider,
+                agent.model,
             )
             if should_notify:
                 await _deliver_to_channel(
@@ -1101,16 +1122,18 @@ def _run_gateway(
 
         slack_raw = getattr(config.channels, "slack", None)
         slack_cfg = (
-            slack_raw if isinstance(slack_raw, SlackConfig)
-            else SlackConfig.model_validate(slack_raw) if slack_raw else None
+            slack_raw
+            if isinstance(slack_raw, SlackConfig)
+            else SlackConfig.model_validate(slack_raw)
+            if slack_raw
+            else None
         )
         ms_projects = list(slack_cfg.projects.values()) if slack_cfg else []
 
         async def on_new_meeting(project, note):
             ms = project.meeting_summary
             repo = ms.issue_repo or (
-                project.github.repos[0]
-                if project.github and len(project.github.repos) == 1 else ""
+                project.github.repos[0] if project.github and len(project.github.repos) == 1 else ""
             )
             roster = _json.dumps([p.model_dump(by_alias=True) for p in project.people])
 
@@ -1149,7 +1172,9 @@ def _run_gateway(
             if resp and resp.content.strip():
                 await _deliver_to_channel(
                     OutboundMessage(
-                        channel="slack", chat_id=ms.summary_channel, content=resp.content,
+                        channel="slack",
+                        chat_id=ms.summary_channel,
+                        content=resp.content,
                     ),
                     record=True,
                 )
@@ -1173,8 +1198,11 @@ def _run_gateway(
 
         _slack_raw = getattr(config.channels, "slack", None)
         _slack = (
-            _slack_raw if isinstance(_slack_raw, _SlackConfig)
-            else _SlackConfig.model_validate(_slack_raw) if _slack_raw else None
+            _slack_raw
+            if isinstance(_slack_raw, _SlackConfig)
+            else _SlackConfig.model_validate(_slack_raw)
+            if _slack_raw
+            else None
         )
         dd_projects = list(_slack.projects.values()) if _slack else []
 
@@ -1195,8 +1223,11 @@ def _run_gateway(
                 pass
 
             resp = await agent.process_direct(
-                trigger, session_key=f"daily-digest:{project.name}",
-                channel="slack", chat_id=channel, on_progress=_silent,
+                trigger,
+                session_key=f"daily-digest:{project.name}",
+                channel="slack",
+                chat_id=channel,
+                on_progress=_silent,
             )
             if resp and resp.content.strip():
                 await _deliver_to_channel(
@@ -1205,10 +1236,69 @@ def _run_gateway(
                 )
 
         daily_digest = DailyDigestService(
-            dd_projects, on_digest,
+            dd_projects,
+            on_digest,
             state_path=config.workspace_path / "daily_digest_state.json",
         )
         console.print(f"[green]✓[/green] Daily-digest: cron '{dd_cfg.cron}'")
+
+    # GitHub poll: near-real-time per-project "what just landed on main" via commit
+    # polling (no webhook/admin needed). Same plain-English style as the digest.
+    gp_cfg = config.gateway.github_poll
+    github_poll = None
+    if gp_cfg.enabled:
+        import os as _gp_os
+
+        from nanobot.channels.slack import SlackConfig as _GpSlackConfig
+        from nanobot.github_poll import GithubPollService, build_repo_channel_map
+
+        _gp_raw = getattr(config.channels, "slack", None)
+        _gp_slack = (
+            _gp_raw
+            if isinstance(_gp_raw, _GpSlackConfig)
+            else _GpSlackConfig.model_validate(_gp_raw)
+            if _gp_raw
+            else None
+        )
+        gp_map = build_repo_channel_map(_gp_slack.projects) if _gp_slack else {}
+        gp_token = _gp_os.environ.get("GH_TOKEN") or _gp_os.environ.get("GITHUB_TOKEN") or ""
+
+        async def _gp_silent(*_a, **_k):
+            pass
+
+        async def gp_on_new(project: str, channel: str, repo: str, subjects: list[str]):
+            commits = "\n".join(f"- {m}" for m in subjects[:20])
+            trigger = (
+                f"New commits just landed on the main branch of {repo}. Explain what "
+                "changed in clear, plain, non-technical language for a project channel: "
+                "one short intro line plus up to 3 bullets, under 60 words, no jargon, "
+                "no commit hashes or PR numbers. If it is only trivial internal churn, "
+                "reply with a single short line.\nCommits:\n" + commits
+            )
+            resp = await agent.process_direct(
+                trigger,
+                session_key=f"gh-poll:{repo}",
+                channel="slack",
+                chat_id=channel,
+                on_progress=_gp_silent,
+            )
+            text = (resp.content if resp else "").strip()
+            if text:
+                await _deliver_to_channel(
+                    OutboundMessage(channel="slack", chat_id=channel, content=text),
+                    record=True,
+                )
+
+        github_poll = GithubPollService(
+            gp_map,
+            gp_token,
+            gp_on_new,
+            state_path=config.workspace_path / "github_poll_state.json",
+            interval_s=gp_cfg.interval_s,
+        )
+        console.print(
+            f"[green]✓[/green] GitHub-poll: every {gp_cfg.interval_s}s, {len(gp_map)} repos"
+        )
 
     # Meeting classifier: one shared folder → classify per project → admin approval → fan-out.
     mc_cfg = config.gateway.meeting_classifier
@@ -1226,8 +1316,11 @@ def _run_gateway(
 
         _raw_mc = getattr(config.channels, "slack", None)
         _slack_mc = (
-            _raw_mc if isinstance(_raw_mc, _SlackConfigMC)
-            else _SlackConfigMC.model_validate(_raw_mc) if _raw_mc else None
+            _raw_mc
+            if isinstance(_raw_mc, _SlackConfigMC)
+            else _SlackConfigMC.model_validate(_raw_mc)
+            if _raw_mc
+            else None
         )
 
     if mc_cfg.enabled and not config.integrations.asana.enabled:
@@ -1252,23 +1345,36 @@ def _run_gateway(
                 f"note_id: {note_id}\ntitle: {title}\nprojects: {registry}"
             )
             resp = await agent.process_direct(
-                trigger, session_key=f"meeting-classify:{note_id}",
-                channel="slack", chat_id=mc_cfg.admin_slack_id, on_progress=_mc_silent,
+                trigger,
+                session_key=f"meeting-classify:{note_id}",
+                channel="slack",
+                chat_id=mc_cfg.admin_slack_id,
+                on_progress=_mc_silent,
             )
             drafts = _mc_fo.parse_classification(resp.content if resp else "", mc_known)
             if not drafts:
-                await _deliver_to_channel(OutboundMessage(
-                    channel="slack", chat_id=mc_cfg.admin_slack_id,
-                    content=f"Meeting '{title or note_id}': no project matched.",
-                ), record=False)
+                await _deliver_to_channel(
+                    OutboundMessage(
+                        channel="slack",
+                        chat_id=mc_cfg.admin_slack_id,
+                        content=f"Meeting '{title or note_id}': no project matched.",
+                    ),
+                    record=False,
+                )
                 return
             for d in drafts:
                 d["title"] = title
                 mc_store.add_draft(note_id, d["project"], d)
             text, buttons = _mc_fo.build_approval(title, note_id, drafts)
-            await _deliver_to_channel(OutboundMessage(
-                channel="slack", chat_id=mc_cfg.admin_slack_id, content=text, buttons=buttons,
-            ), record=False)
+            await _deliver_to_channel(
+                OutboundMessage(
+                    channel="slack",
+                    chat_id=mc_cfg.admin_slack_id,
+                    content=text,
+                    buttons=buttons,
+                ),
+                record=False,
+            )
 
         async def mc_on_action(payload):
             sender_id = str(((payload.get("user") or {}).get("id")) or "")
@@ -1292,28 +1398,40 @@ def _run_gateway(
             channel = mc_channel_of.get(project, "")
             if not channel:
                 return
-            await _deliver_to_channel(OutboundMessage(
-                channel="slack", chat_id=channel,
-                content=_mc_fo.format_post(project, draft.get("title", ""), draft),
-            ), record=True)
+            await _deliver_to_channel(
+                OutboundMessage(
+                    channel="slack",
+                    chat_id=channel,
+                    content=_mc_fo.format_post(project, draft.get("title", ""), draft),
+                ),
+                record=True,
+            )
             store = getattr(agent, "_message_store", None)
             if store is not None:
                 from nanobot.meeting_summary.ingest import ingest_note
+
                 proj_obj = next((p for p in mc_projects if p.name == project), None)
                 if proj_obj is not None:
-                    await ingest_note(store, proj_obj, {
-                        "id": f"{note_id}:{project}",
-                        "title": f"{draft.get('title', 'Meeting')} ({project})",
-                        "summary": draft.get("summary", ""),
-                        "transcript": "\n".join(draft.get("actions") or []),
-                    }, channel_id=channel)
+                    await ingest_note(
+                        store,
+                        proj_obj,
+                        {
+                            "id": f"{note_id}:{project}",
+                            "title": f"{draft.get('title', 'Meeting')} ({project})",
+                            "summary": draft.get("summary", ""),
+                            "transcript": "\n".join(draft.get("actions") or []),
+                        },
+                        channel_id=channel,
+                    )
 
         _sc_mc = channels.get_channel("slack")
         if _sc_mc is not None and hasattr(_sc_mc, "set_approval_callback"):
             _sc_mc.set_approval_callback(mc_on_action)
 
         meeting_classifier = MeetingClassifierService(
-            config.tools.granola, mc_cfg.folder_id, mc_on_new_note,
+            config.tools.granola,
+            mc_cfg.folder_id,
+            mc_on_new_note,
             state_path=config.workspace_path / "meeting_classifier_state.json",
             interval_s=mc_cfg.interval_s,
         )
@@ -1372,6 +1490,7 @@ def _run_gateway(
         console.print(f"[green]✓[/green] Health endpoint: http://{host}:{health_port}/health")
         async with server:
             await server.serve_forever()
+
     # Register Dream system job (always-on, idempotent on restart)
     dream_cfg = config.agents.defaults.dream
     if dream_cfg.model_override:
@@ -1380,12 +1499,15 @@ def _run_gateway(
     agent.dream.max_iterations = dream_cfg.max_iterations
     agent.dream.annotate_line_ages = dream_cfg.annotate_line_ages
     from nanobot.cron.types import CronJob, CronPayload
-    cron.register_system_job(CronJob(
-        id="dream",
-        name="dream",
-        schedule=dream_cfg.build_schedule(config.agents.defaults.timezone),
-        payload=CronPayload(kind="system_event"),
-    ))
+
+    cron.register_system_job(
+        CronJob(
+            id="dream",
+            name="dream",
+            schedule=dream_cfg.build_schedule(config.agents.defaults.timezone),
+            payload=CronPayload(kind="system_event"),
+        )
+    )
     console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
 
     async def _open_browser_when_ready() -> None:
@@ -1393,6 +1515,7 @@ def _run_gateway(
         if not open_browser_url:
             return
         import webbrowser
+
         # Channels start asynchronously; a short poll lets us avoid racing the bind.
         for _ in range(40):  # ~4s max
             try:
@@ -1409,7 +1532,9 @@ def _run_gateway(
             webbrowser.open(open_browser_url)
             console.print(f"[green]✓[/green] Opened browser at {open_browser_url}")
         except Exception as e:
-            console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
+            console.print(
+                f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]"
+            )
 
     async def run():
         nonlocal asana_client, meeting_classifier, meeting_coordinator, provisioning_worker
@@ -1483,10 +1608,12 @@ def _run_gateway(
                     title = str(note.get("title") or "")
                     live_projects = list(slack_channel.config.projects.values())
                     known_projects = {project.name for project in live_projects}
-                    registry_json = _json_mc2.dumps([
-                        {"name": project.name, "description": project.description}
-                        for project in live_projects
-                    ])
+                    registry_json = _json_mc2.dumps(
+                        [
+                            {"name": project.name, "description": project.description}
+                            for project in live_projects
+                        ]
+                    )
                     trigger = (
                         "Classify this meeting note into structured project task drafts. "
                         "Run the meeting-classify skill and return only its JSON array.\n"
@@ -1513,18 +1640,13 @@ def _run_gateway(
                         )
                         return
                     raw_date = str(
-                        note.get("meeting_date")
-                        or note.get("date")
-                        or note.get("created_at")
-                        or ""
+                        note.get("meeting_date") or note.get("date") or note.get("created_at") or ""
                     )
                     try:
                         meeting_date = date.fromisoformat(raw_date[:10])
                     except ValueError:
                         meeting_date = datetime.now(UTC).date()
-                    await meeting_coordinator.on_new_note(
-                        note_id, title, meeting_date, drafts
-                    )
+                    await meeting_coordinator.on_new_note(note_id, title, meeting_date, drafts)
 
                 async def mc2_on_interaction(payload):
                     result = await meeting_coordinator.handle_interaction(payload)
@@ -1545,28 +1667,34 @@ def _run_gateway(
                     f"[green]✓[/green] Asana meeting provisioning: folder {mc_cfg.folder_id}"
                 )
             if getattr(agent, "distiller", None) is not None:
-                cron.register_system_job(CronJob(
-                    id="distill",
-                    name="distill",
-                    schedule=config.memory.distiller_schedule(config.agents.defaults.timezone),
-                    payload=CronPayload(kind="system_event"),
-                ))
+                cron.register_system_job(
+                    CronJob(
+                        id="distill",
+                        name="distill",
+                        schedule=config.memory.distiller_schedule(config.agents.defaults.timezone),
+                        payload=CronPayload(kind="system_event"),
+                    )
+                )
                 console.print(
                     f"[green]✓[/green] Distiller: {config.memory.describe_distiller_schedule()}"
                 )
             if daily_digest is not None:
-                cron.register_system_job(CronJob(
-                    id="daily-digest",
-                    name="daily-digest",
-                    schedule=dd_cfg.digest_schedule(config.agents.defaults.timezone),
-                    payload=CronPayload(kind="system_event"),
-                ))
+                cron.register_system_job(
+                    CronJob(
+                        id="daily-digest",
+                        name="daily-digest",
+                        schedule=dd_cfg.digest_schedule(config.agents.defaults.timezone),
+                        payload=CronPayload(kind="system_event"),
+                    )
+                )
             await cron.start()
             await heartbeat.start()
             if meeting_summary:
                 await meeting_summary.start()
             if meeting_classifier:
                 await meeting_classifier.start()
+            if github_poll:
+                await github_poll.start()
             tasks = [
                 agent.run(),
                 channels_task,
@@ -1589,6 +1717,8 @@ def _run_gateway(
                 meeting_summary.stop()
             if meeting_classifier:
                 meeting_classifier.stop()
+            if github_poll:
+                github_poll.stop()
             if provisioning_worker is not None:
                 with suppress(Exception):
                     await provisioning_worker.stop()
@@ -1624,8 +1754,12 @@ def agent(
     session_id: str = typer.Option("cli:direct", "--session", "-s", help="Session ID"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
-    markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
-    logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
+    markdown: bool = typer.Option(
+        True, "--markdown/--no-markdown", help="Render assistant output as Markdown"
+    ),
+    logs: bool = typer.Option(
+        False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"
+    ),
 ):
     """Interact with the agent directly."""
     from loguru import logger
@@ -1654,7 +1788,8 @@ def agent(
 
     try:
         agent_loop = AgentLoop.from_config(
-            config, bus,
+            config,
+            bus,
             cron_service=cron,
             image_generation_provider_configs=image_gen_provider_configs(config),
         )
@@ -1674,7 +1809,9 @@ def agent(
     def _make_progress(renderer: StreamRenderer | None = None):
         reasoning_buffer = _ReasoningBuffer()
 
-        async def _cli_progress(content: str, *, tool_hint: bool = False, reasoning: bool = False, **_kwargs: Any) -> None:
+        async def _cli_progress(
+            content: str, *, tool_hint: bool = False, reasoning: bool = False, **_kwargs: Any
+        ) -> None:
             ch = agent_loop.channels_config
 
             if _kwargs.get("reasoning_end"):
@@ -1697,6 +1834,7 @@ def agent(
             if ch and not tool_hint and not ch.send_progress:
                 return
             _print_cli_progress_line(content, _thinking, renderer)
+
         return _cli_progress
 
     if message:
@@ -1708,7 +1846,8 @@ def agent(
                 bot_icon=config.agents.defaults.bot_icon,
             )
             response = await agent_loop.process_direct(
-                message, session_id,
+                message,
+                session_id,
                 on_progress=_make_progress(renderer),
                 on_stream=renderer.on_delta,
                 on_stream_end=renderer.on_end,
@@ -1730,9 +1869,12 @@ def agent(
     else:
         # Interactive mode — route through bus like other channels
         from nanobot.bus.events import InboundMessage
+
         _init_prompt_session()
         _model, _preset_tag = _model_display(config)
-        console.print(f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n")
+        console.print(
+            f"{__logo__} Interactive mode [bold blue]({_model})[/bold blue]{_preset_tag} — type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
+        )
 
         if ":" in session_id:
             cli_channel, cli_chat_id = session_id.split(":", 1)
@@ -1748,11 +1890,11 @@ def agent(
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
         # SIGHUP is not available on Windows
-        if hasattr(signal, 'SIGHUP'):
+        if hasattr(signal, "SIGHUP"):
             signal.signal(signal.SIGHUP, _handle_signal)
         # Ignore SIGPIPE to prevent silent process termination when writing to closed pipes
         # SIGPIPE is not available on Windows
-        if hasattr(signal, 'SIGPIPE'):
+        if hasattr(signal, "SIGPIPE"):
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive():
@@ -1835,13 +1977,15 @@ def agent(
                             bot_icon=config.agents.defaults.bot_icon,
                         )
 
-                        await bus.publish_inbound(InboundMessage(
-                            channel=cli_channel,
-                            sender_id="user",
-                            chat_id=cli_chat_id,
-                            content=user_input,
-                            metadata={"_wants_stream": True},
-                        ))
+                        await bus.publish_inbound(
+                            InboundMessage(
+                                channel=cli_channel,
+                                sender_id="user",
+                                chat_id=cli_chat_id,
+                                content=user_input,
+                                metadata={"_wants_stream": True},
+                            )
+                        )
 
                         await turn_done.wait()
 
@@ -1924,7 +2068,9 @@ def channels_status(
 @channels_app.command("login")
 def channels_login(
     channel_name: str = typer.Argument(..., help="Channel name (e.g. weixin, whatsapp)"),
-    force: bool = typer.Option(False, "--force", "-f", help="Force re-authentication even if already logged in"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force re-authentication even if already logged in"
+    ),
     config_path: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Authenticate with a channel via QR code or other interactive login."""
@@ -2014,8 +2160,12 @@ def status():
 
     console.print(f"{__logo__} nanobot Status\n")
 
-    console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
-    console.print(f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}")
+    console.print(
+        f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}"
+    )
+    console.print(
+        f"Workspace: {workspace} {'[green]✓[/green]' if workspace.exists() else '[red]✗[/red]'}"
+    )
 
     if config_path.exists():
         from nanobot.providers.registry import PROVIDERS
@@ -2038,7 +2188,9 @@ def status():
                     console.print(f"{spec.label}: [dim]not set[/dim]")
             else:
                 has_key = bool(p.api_key)
-                console.print(f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}")
+                console.print(
+                    f"{spec.label}: {'[green]✓[/green]' if has_key else '[dim]not set[/dim]'}"
+                )
 
 
 # ============================================================================
@@ -2060,6 +2212,7 @@ _PROVIDER_DISPLAY: dict[str, str] = {
 
 def _register_login(name: str):
     """Register an OAuth login handler."""
+
     def decorator(fn):
         _LOGIN_HANDLERS[name] = fn
         return fn
@@ -2069,9 +2222,11 @@ def _register_login(name: str):
 
 def _register_logout(name: str):
     """Register an OAuth logout handler."""
+
     def decorator(fn):
         _LOGOUT_HANDLERS[name] = fn
         return fn
+
     return decorator
 
 
@@ -2090,7 +2245,9 @@ def _resolve_oauth_provider(provider: str):
 
 @provider_app.command("login")
 def provider_login(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(
+        ..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"
+    ),
 ):
     """Authenticate with an OAuth provider."""
     spec = _resolve_oauth_provider(provider)
@@ -2106,7 +2263,9 @@ def provider_login(
 
 @provider_app.command("logout")
 def provider_logout(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(
+        ..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"
+    ),
 ):
     """Log out from an OAuth provider."""
     spec = _resolve_oauth_provider(provider)
@@ -2137,7 +2296,9 @@ def _login_openai_codex() -> None:
         if not (token and token.access):
             console.print("[red]✗ Authentication failed[/red]")
             raise typer.Exit(1)
-        console.print(f"[green]✓ Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]")
+        console.print(
+            f"[green]✓ Authenticated with OpenAI Codex[/green]  [dim]{token.account_id}[/dim]"
+        )
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
         raise typer.Exit(1)
@@ -2163,7 +2324,9 @@ def _logout_github_copilot() -> None:
     try:
         from nanobot.providers.github_copilot_provider import get_storage
     except ImportError:
-        console.print("[red]GitHub Copilot provider unavailable. Ensure oauth-cli-kit is installed.[/red]")
+        console.print(
+            "[red]GitHub Copilot provider unavailable. Ensure oauth-cli-kit is installed.[/red]"
+        )
         raise typer.Exit(1)
 
     storage = get_storage()
